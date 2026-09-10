@@ -708,9 +708,9 @@ static void UpdateMidiDetails() {
     default: modeStr = "None"; break;
     }
     std::string lastLine = "Note Mode: " + modeStr;
-    bool legit = midi::Config::getInstance().legit_mode.ENABLED;
+    bool humanizer = midi::Config::getInstance().humanizer.ENABLED;
     bool filterDrums = midi::Config::getInstance().midi.FILTER_DRUMS;
-    lastLine += (legit ? " (Legit Mode)" : " (Normal Mode)");
+    lastLine += (humanizer ? " (Humanizer: On)" : " (Humanizer: Off)");
     lastLine += (filterDrums ? " (Ch10 Filter: On)" : " (Ch10 Filter: Off)");
     SendMessageA(g_editDetails, EM_REPLACESEL, FALSE, reinterpret_cast<LPARAM>(lastLine.c_str()));
 }

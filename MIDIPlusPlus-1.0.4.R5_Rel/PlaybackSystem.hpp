@@ -283,6 +283,8 @@ private:
     // Core playback functions.
     void play_notes();
     void prepare_event_queue();
+    void apply_humanizer();
+    void apply_repeated_note_gap();
     void execute_note_event(const NoteEvent& event) noexcept;
     void handle_sustain_event(const NoteEvent& event);
     size_t find_next_event_index(const std::chrono::nanoseconds& target_time);

@@ -461,8 +461,8 @@ void VirtualPianoPlayer::prepare_event_queue() {
     std::lock_guard<std::mutex> lock(buffer_mutex);
     note_buffer.clear();
     event_pool.reset();
+
     for (const auto& e : note_events) {
-        // Fix: e.action is already an enum so no string comparison is needed.
         EventType act = e.action;
         auto time_ns = e.time;
         int vel = e.velocity;
@@ -472,105 +472,615 @@ void VirtualPianoPlayer::prepare_event_queue() {
         int realVel = isSust ? 0 : vel;
         note_buffer.push_back(event_pool.allocate(time_ns, e.note_or_control, act, realVel, isSust, sVal, tIdx));
     }
+
+    // Playback transformations operate only on the prepared event queue.  The
+    // parsed MIDI and its source timestamps remain untouched.
     std::stable_sort(note_buffer.begin(), note_buffer.end(),
-        [](const NoteEvent* a, const NoteEvent* b) { return a->time < b->time; });
+        [](const NoteEvent* a, const NoteEvent* b) {
+            if (a->time != b->time)
+                return a->time < b->time;
+            return a->action == EventType::Release && b->action == EventType::Press;
+        });
 
-    // Virtual pianos need a real key-up interval to visibly retrigger the same
-    // key. MIDI files commonly end one note at exactly the same timestamp that
-    // the next copy of that note begins. Sending KeyUp and KeyDown back-to-back
-    // is audible in some games, but the visual key can remain continuously down.
-    //
-    // Keep every Note On at its original timestamp. When consecutive presses of
-    // the same note are too close to the previous release, move only that
-    // previous release earlier by REPEATED_NOTE_GAP_MS.
-    const int repeatedGapMs = midi::Config::getInstance().playback.REPEATED_NOTE_GAP_MS;
-    if (repeatedGapMs > 0) {
-        const auto desiredGap = std::chrono::milliseconds(repeatedGapMs);
-        const auto minimumNoteLength = std::chrono::milliseconds(1);
+    apply_humanizer();
+    apply_repeated_note_gap();
 
-        // Group ordinary (non-sustain) events by MIDI note name. The output
-        // layer also tracks held keys by note name, so this matches the state
-        // that press_key()/release_key() actually use.
-        std::unordered_map<std::string, std::vector<NoteEvent*>> eventsByNote;
-        for (auto* event : note_buffer) {
-            if (!event->isSustain)
-                eventsByNote[std::string(event->note)].push_back(event);
-        }
+    // Both transforms can move releases earlier and the humanizer can move
+    // presses later, so restore one globally ordered queue before playback.
+    std::stable_sort(note_buffer.begin(), note_buffer.end(),
+        [](const NoteEvent* a, const NoteEvent* b) {
+            if (a->time != b->time)
+                return a->time < b->time;
+            return a->action == EventType::Release && b->action == EventType::Press;
+        });
+}
 
-        for (auto& [note, events] : eventsByNote) {
-            std::vector<NoteEvent*> activePresses;
-            std::unordered_map<NoteEvent*, NoteEvent*> releaseForPress;
+void VirtualPianoPlayer::apply_humanizer() {
+    const auto& settings = midi::Config::getInstance().humanizer;
+    if (!settings.ENABLED)
+        return;
 
-            // Pair each release with an active press using the configured
-            // FIFO/LIFO stacked-note rule. Releases at the same timestamp are
-            // treated before presses, matching play_notes().
-            std::stable_sort(events.begin(), events.end(),
-                [](const NoteEvent* a, const NoteEvent* b) {
-                    if (a->time != b->time)
-                        return a->time < b->time;
-                    return a->action == EventType::Release && b->action == EventType::Press;
-                });
+    using ns = std::chrono::nanoseconds;
+    const auto minimumNoteLength = std::chrono::milliseconds(1);
+    const auto chordWindow = std::chrono::milliseconds(settings.CHORD_DETECTION_WINDOW_MS);
 
-            const auto handlingMode = midi::Config::getInstance().playback.noteHandlingMode;
-            for (auto* event : events) {
-                if (event->action == EventType::Press) {
-                    activePresses.push_back(event);
-                    continue;
-                }
+    enum class Hand : uint8_t { Left, Right };
+    enum Finger : int { Thumb = 0, Index = 1, Middle = 2, Ring = 3, Pinky = 4 };
 
-                if (activePresses.empty())
-                    continue;
+    struct LogicalNote {
+        NoteEvent* press = nullptr;
+        NoteEvent* release = nullptr;
+        ns originalPress{ 0 };
+        ns originalRelease{ 0 };
+        int pitch = 60;
+        int trackIndex = -1;
+        Hand hand = Hand::Right;
+    };
 
-                size_t pressIndex = 0;
-                if (handlingMode == midi::NoteHandlingMode::LIFO)
-                    pressIndex = activePresses.size() - 1;
+    struct HandGroup {
+        ns originalStart{ 0 };
+        std::vector<size_t> members;
+    };
 
-                NoteEvent* matchedPress = activePresses[pressIndex];
-                releaseForPress[matchedPress] = event;
-                activePresses.erase(activePresses.begin() + pressIndex);
-            }
+    auto mix64 = [](uint64_t x) noexcept {
+        x += 0x9e3779b97f4a7c15ULL;
+        x = (x ^ (x >> 30)) * 0xbf58476d1ce4e5b9ULL;
+        x = (x ^ (x >> 27)) * 0x94d049bb133111ebULL;
+        return x ^ (x >> 31);
+    };
 
-            std::vector<NoteEvent*> presses;
-            presses.reserve(events.size());
-            for (auto* event : events) {
-                if (event->action == EventType::Press)
-                    presses.push_back(event);
-            }
+    uint64_t sessionSeed = 0x6d6964692b2b4831ULL; // "midi++H1"
+    if (settings.RANDOMIZE_EACH_PLAY) {
+        sessionSeed ^= static_cast<uint64_t>(
+            std::chrono::high_resolution_clock::now().time_since_epoch().count());
+    }
 
-            // For P1 -> P2, shorten P1 only when its paired release would
-            // otherwise leave less than the configured key-up gap before P2.
-            for (size_t i = 0; i + 1 < presses.size(); ++i) {
-                NoteEvent* currentPress = presses[i];
-                NoteEvent* nextPress = presses[i + 1];
+    auto unitRandom = [&](uint64_t key) noexcept -> double {
+        const uint64_t value = mix64(key ^ sessionSeed);
+        // 53-bit fraction in [0, 1).
+        return static_cast<double>(value >> 11) * (1.0 / 9007199254740992.0);
+    };
 
-                auto releaseIt = releaseForPress.find(currentPress);
-                if (releaseIt == releaseForPress.end())
-                    continue;
+    auto millisToNs = [](double ms) noexcept -> ns {
+        if (ms <= 0.0)
+            return ns(0);
+        return ns(static_cast<ns::rep>(ms * 1000000.0 + 0.5));
+    };
 
-                NoteEvent* currentRelease = releaseIt->second;
-                auto targetRelease = nextPress->time - desiredGap;
-                auto earliestRelease = currentPress->time + minimumNoteLength;
+    // Pair each Note On with its Note Off.  Pairing is track-aware so two
+    // tracks playing the same pitch do not steal each other's release event.
+    std::unordered_map<std::string, std::vector<NoteEvent*>> eventsByVoice;
+    for (auto* event : note_buffer) {
+        if (event->isSustain)
+            continue;
+        std::string key(event->note);
+        key += '#';
+        key += std::to_string(event->trackIndex);
+        eventsByVoice[key].push_back(event);
+    }
 
-                // Extremely fast repeats may not contain enough time for the
-                // full requested gap. Preserve at least 1 ms of note length and
-                // use whatever key-up time remains. If even that is impossible,
-                // leave the original event alone and let press_key() use its
-                // existing immediate re-trigger fallback.
-                if (targetRelease < earliestRelease)
-                    targetRelease = earliestRelease;
+    std::vector<LogicalNote> notes;
+    notes.reserve(note_buffer.size() / 2);
+    const auto handlingMode = midi::Config::getInstance().playback.noteHandlingMode;
 
-                if (targetRelease < nextPress->time && targetRelease < currentRelease->time)
-                    currentRelease->time = targetRelease;
-            }
-        }
-
-        // Some releases may now occur earlier, so restore global time order.
-        std::stable_sort(note_buffer.begin(), note_buffer.end(),
+    for (auto& [voice, events] : eventsByVoice) {
+        std::stable_sort(events.begin(), events.end(),
             [](const NoteEvent* a, const NoteEvent* b) {
                 if (a->time != b->time)
                     return a->time < b->time;
                 return a->action == EventType::Release && b->action == EventType::Press;
             });
+
+        std::vector<NoteEvent*> activePresses;
+        std::unordered_map<NoteEvent*, NoteEvent*> releaseForPress;
+
+        for (auto* event : events) {
+            if (event->action == EventType::Press) {
+                activePresses.push_back(event);
+                continue;
+            }
+            if (activePresses.empty())
+                continue;
+
+            size_t pressIndex = 0;
+            if (handlingMode == midi::NoteHandlingMode::LIFO)
+                pressIndex = activePresses.size() - 1;
+
+            NoteEvent* matchedPress = activePresses[pressIndex];
+            releaseForPress[matchedPress] = event;
+            activePresses.erase(activePresses.begin() + static_cast<std::ptrdiff_t>(pressIndex));
+        }
+
+        for (auto* event : events) {
+            if (event->action != EventType::Press)
+                continue;
+            auto it = releaseForPress.find(event);
+            if (it == releaseForPress.end())
+                continue;
+
+            LogicalNote n;
+            n.press = event;
+            n.release = it->second;
+            n.originalPress = event->time;
+            n.originalRelease = it->second->time;
+            n.pitch = note_name_to_midi(event->note);
+            n.trackIndex = event->trackIndex;
+            notes.push_back(n);
+        }
+    }
+
+    if (notes.empty())
+        return;
+
+    std::stable_sort(notes.begin(), notes.end(),
+        [](const LogicalNote& a, const LogicalNote& b) {
+            if (a.originalPress != b.originalPress)
+                return a.originalPress < b.originalPress;
+            if (a.pitch != b.pitch)
+                return a.pitch < b.pitch;
+            return a.trackIndex < b.trackIndex;
+        });
+
+    // Track register is a useful hand clue when a MIDI uses separate left- and
+    // right-hand tracks.  A strongly low/high median gets priority; ambiguous
+    // tracks fall back to local register and chord shape.
+    std::unordered_map<int, std::vector<int>> pitchesByTrack;
+    for (const auto& n : notes)
+        pitchesByTrack[n.trackIndex].push_back(n.pitch);
+
+    std::unordered_map<int, int> trackMedian;
+    for (auto& [track, pitches] : pitchesByTrack) {
+        std::sort(pitches.begin(), pitches.end());
+        trackMedian[track] = pitches[pitches.size() / 2];
+    }
+
+    for (auto& n : notes) {
+        const int median = trackMedian[n.trackIndex];
+        if (median <= 55)          // G3 or below: strongly left-hand track
+            n.hand = Hand::Left;
+        else if (median >= 65)     // F4 or above: strongly right-hand track
+            n.hand = Hand::Right;
+        else
+            n.hand = (n.pitch < 60) ? Hand::Left : Hand::Right; // C4 fallback
+    }
+
+    // Build onset groups from ORIGINAL Note On times.  Humanization never
+    // feeds back into chord detection, so rerunning playback is stable.
+    std::vector<std::vector<size_t>> onsetGroups;
+    for (size_t i = 0; i < notes.size();) {
+        const ns groupStart = notes[i].originalPress;
+        std::vector<size_t> group;
+        size_t j = i;
+        while (j < notes.size() && notes[j].originalPress - groupStart <= chordWindow) {
+            group.push_back(j);
+            ++j;
+        }
+        onsetGroups.push_back(std::move(group));
+        i = j;
+    }
+
+    // Refine hand assignment inside simultaneous groups.  Wide groups that
+    // straddle middle C are split at the largest pitch gap; close clusters stay
+    // together as one hand, including two-note dyads.
+    for (const auto& group : onsetGroups) {
+        if (group.size() < 2)
+            continue;
+
+        std::vector<size_t> byPitch = group;
+        std::sort(byPitch.begin(), byPitch.end(), [&](size_t a, size_t b) {
+            return notes[a].pitch < notes[b].pitch;
+        });
+
+        bool hasStrongLeftTrack = false;
+        bool hasStrongRightTrack = false;
+        for (size_t idx : byPitch) {
+            const int median = trackMedian[notes[idx].trackIndex];
+            hasStrongLeftTrack |= (median <= 55);
+            hasStrongRightTrack |= (median >= 65);
+        }
+        if (hasStrongLeftTrack && hasStrongRightTrack)
+            continue; // explicit track/register evidence is stronger than pitch split
+
+        int largestGap = -1;
+        size_t splitAfter = 0;
+        for (size_t k = 0; k + 1 < byPitch.size(); ++k) {
+            const int gap = notes[byPitch[k + 1]].pitch - notes[byPitch[k]].pitch;
+            if (gap > largestGap) {
+                largestGap = gap;
+                splitAfter = k;
+            }
+        }
+
+        const int low = notes[byPitch.front()].pitch;
+        const int high = notes[byPitch.back()].pitch;
+        const int span = high - low;
+        const bool straddlesMiddleC = low < 60 && high >= 60;
+        const bool obviousTwoHandDyad = byPitch.size() == 2 && straddlesMiddleC && largestGap >= 13;
+        const bool obviousTwoHandGroup = byPitch.size() >= 3 && straddlesMiddleC && span >= 12 && largestGap >= 5;
+
+        if (obviousTwoHandDyad || obviousTwoHandGroup) {
+            for (size_t k = 0; k <= splitAfter; ++k)
+                notes[byPitch[k]].hand = Hand::Left;
+            for (size_t k = splitAfter + 1; k < byPitch.size(); ++k)
+                notes[byPitch[k]].hand = Hand::Right;
+        }
+        else {
+            // If a compact chord was split only because it crossed C4, keep it
+            // as one physical hand based on the chord's center of gravity.
+            long pitchTotal = 0;
+            for (size_t idx : byPitch)
+                pitchTotal += notes[idx].pitch;
+            const double averagePitch = static_cast<double>(pitchTotal) / static_cast<double>(byPitch.size());
+            const Hand chordHand = averagePitch < 60.0 ? Hand::Left : Hand::Right;
+            for (size_t idx : byPitch)
+                notes[idx].hand = chordHand;
+        }
+    }
+
+    // Convert each onset group into at most one gesture per hand.  A gesture
+    // may be a single melody note or a 2-5 note chord.
+    std::vector<HandGroup> leftGroups;
+    std::vector<HandGroup> rightGroups;
+    for (const auto& group : onsetGroups) {
+        HandGroup left;
+        HandGroup right;
+        left.originalStart = notes[group.front()].originalPress;
+        right.originalStart = left.originalStart;
+
+        for (size_t idx : group) {
+            if (notes[idx].hand == Hand::Left)
+                left.members.push_back(idx);
+            else
+                right.members.push_back(idx);
+        }
+        if (!left.members.empty())
+            leftGroups.push_back(std::move(left));
+        if (!right.members.empty())
+            rightGroups.push_back(std::move(right));
+    }
+
+    auto makeFingerPositions = [&](size_t count, int span, uint64_t seed) {
+        // Positions are low-pitch -> high-pitch across one hand.  The same
+        // positional subsets are mirrored into actual LH/RH finger names.
+        std::vector<int> positions;
+        if (count >= 5) {
+            positions = { 0, 1, 2, 3, 4 };
+        }
+        else if (count == 4) {
+            const double r = unitRandom(seed ^ 0x401ULL);
+            if (r < 0.48)      positions = { 0, 1, 2, 4 }; // most often omit ring position
+            else if (r < 0.78) positions = { 0, 2, 3, 4 }; // omit index position
+            else               positions = { 0, 1, 3, 4 }; // omit middle position
+        }
+        else if (count == 3) {
+            const double r = unitRandom(seed ^ 0x301ULL);
+            if (r < 0.62)      positions = { 0, 2, 4 }; // outer fingers + middle
+            else if (r < 0.80) positions = { 0, 1, 4 };
+            else if (r < 0.91) positions = { 0, 3, 4 };
+            else if (r < 0.96) positions = { 0, 1, 2 };
+            else               positions = { 0, 2, 3 };
+        }
+        else if (count == 2) {
+            // Wider dyads naturally use wider finger spans.
+            if (span <= 2)      positions = { 0, 1 };
+            else if (span <= 5) positions = { 0, 2 };
+            else if (span <= 8) positions = { 0, 3 };
+            else                positions = { 0, 4 };
+        }
+        return positions;
+    };
+
+    auto pressPriority = [](Hand hand, int finger) noexcept {
+        if (hand == Hand::Right) {
+            // User's RH tendency: thumb -> middle -> pinky -> index -> ring.
+            static constexpr int rank[5] = { 0, 3, 1, 4, 2 };
+            return rank[finger];
+        }
+        // Mirrored LH tendency: pinky -> middle -> thumb -> ring -> index.
+        static constexpr int rank[5] = { 2, 4, 1, 3, 0 };
+        return rank[finger];
+    };
+
+    auto humanizeHandGroups = [&](std::vector<HandGroup>& groups, Hand hand) {
+        for (size_t groupIndex = 0; groupIndex < groups.size(); ++groupIndex) {
+            auto& group = groups[groupIndex];
+            const size_t count = group.members.size();
+            if (count < 2 || count > 5)
+                continue;
+
+            std::sort(group.members.begin(), group.members.end(), [&](size_t a, size_t b) {
+                return notes[a].pitch < notes[b].pitch;
+            });
+
+            const int span = notes[group.members.back()].pitch - notes[group.members.front()].pitch;
+            uint64_t seed = static_cast<uint64_t>(group.originalStart.count());
+            seed ^= static_cast<uint64_t>(hand == Hand::Left ? 0x4c48414e44ULL : 0x5248414e44ULL);
+            for (size_t idx : group.members)
+                seed = mix64(seed ^ static_cast<uint64_t>((notes[idx].pitch + 1) * 131 + (notes[idx].trackIndex + 7) * 17));
+
+            const auto positions = makeFingerPositions(count, span, seed);
+            if (positions.size() != count)
+                continue;
+
+            struct FingeredNote { size_t noteIndex; int finger; };
+            std::vector<FingeredNote> fingered;
+            fingered.reserve(count);
+            for (size_t i = 0; i < count; ++i) {
+                const int position = positions[i];
+                const int finger = hand == Hand::Right ? position : (4 - position);
+                fingered.push_back({ group.members[i], finger });
+            }
+
+            std::stable_sort(fingered.begin(), fingered.end(), [&](const FingeredNote& a, const FingeredNote& b) {
+                return pressPriority(hand, a.finger) < pressPriority(hand, b.finger);
+            });
+
+            double countScale = 1.0;
+            if (count == 2) countScale = 0.35;
+            else if (count == 3) countScale = 0.60;
+            else if (count == 4) countScale = 0.82;
+
+            double maxPressSpreadMs = settings.CHORD_PRESS_MAX_SPREAD_MS * countScale;
+            if (groupIndex + 1 < groups.size()) {
+                const double ioiMs = std::chrono::duration<double, std::milli>(
+                    groups[groupIndex + 1].originalStart - group.originalStart).count();
+                if (ioiMs > 0.0)
+                    maxPressSpreadMs = std::min(maxPressSpreadMs, ioiMs * 0.20);
+            }
+            maxPressSpreadMs = std::max(0.0, maxPressSpreadMs);
+
+            double cumulativeMs = 0.0;
+            const double nominalStep = count > 1 ? maxPressSpreadMs / static_cast<double>(count - 1) : 0.0;
+            bool introducedPressStagger = false;
+            for (size_t hit = 0; hit < fingered.size(); ++hit) {
+                if (hit > 0) {
+                    const double togetherRoll = unitRandom(seed ^ (0xA100ULL + hit * 31ULL));
+                    const bool together = togetherRoll < (settings.SIMULTANEOUS_FINGER_CHANCE_PERCENT / 100.0);
+                    if (!together) {
+                        const double shape = 0.55 + 0.75 * unitRandom(seed ^ (0xA200ULL + hit * 47ULL));
+                        cumulativeMs += nominalStep * shape;
+                        cumulativeMs = std::min(cumulativeMs, maxPressSpreadMs);
+                    }
+                }
+
+                LogicalNote& n = notes[fingered[hit].noteIndex];
+                const ns candidate = group.originalStart + millisToNs(cumulativeMs);
+                ns newPress = std::max(n.originalPress, candidate);
+                const ns latestSafePress = n.originalRelease - minimumNoteLength;
+                if (latestSafePress >= n.originalPress)
+                    newPress = std::min(newPress, latestSafePress);
+                else
+                    newPress = n.originalPress;
+                n.press->time = newPress;
+                introducedPressStagger |= (newPress > n.originalPress);
+            }
+
+            // A 3-5 finger chord should not accidentally remain perfectly
+            // simultaneous just because every random "together" roll hit.
+            // Two-note dyads are allowed to land together naturally.
+            if (!introducedPressStagger && count >= 3 && maxPressSpreadMs >= 1.0) {
+                LogicalNote& n = notes[fingered.back().noteIndex];
+                const ns forcedDelay = millisToNs(std::min(2.0, maxPressSpreadMs));
+                const ns latestSafePress = n.originalRelease - minimumNoteLength;
+                if (latestSafePress > n.originalPress)
+                    n.press->time = std::min(n.originalPress + forcedDelay, latestSafePress);
+            }
+
+            // Release variation is independent from strike order.  At least one
+            // finger stays until its original Note Off; others may lift a few
+            // milliseconds early, and some share the same lift time.
+            const double maxReleaseSpreadMs = settings.CHORD_RELEASE_MAX_SPREAD_MS * countScale;
+            const size_t releaseAnchor = static_cast<size_t>(
+                unitRandom(seed ^ 0xB001ULL) * static_cast<double>(count)) % count;
+            double previousEarlyMs = 0.0;
+            bool introducedEarlyRelease = false;
+
+            for (size_t i = 0; i < count; ++i) {
+                LogicalNote& n = notes[group.members[i]];
+                double earlyMs = 0.0;
+                if (i != releaseAnchor && maxReleaseSpreadMs > 0.0) {
+                    const double r = unitRandom(seed ^ (0xB100ULL + i * 59ULL));
+                    const double sameChance = settings.SIMULTANEOUS_FINGER_CHANCE_PERCENT / 100.0;
+                    if (i > 0 && r < sameChance * 0.55) {
+                        earlyMs = previousEarlyMs; // two fingers lift together
+                    }
+                    else if (r >= sameChance) {
+                        earlyMs = maxReleaseSpreadMs *
+                            (0.20 + 0.80 * unitRandom(seed ^ (0xB200ULL + i * 71ULL)));
+                    }
+                }
+                previousEarlyMs = earlyMs;
+
+                ns candidate = n.originalRelease - millisToNs(earlyMs);
+                const ns earliestSafeRelease = n.press->time + minimumNoteLength;
+                if (candidate < earliestSafeRelease)
+                    candidate = earliestSafeRelease;
+                if (candidate < n.release->time) {
+                    n.release->time = candidate;
+                    introducedEarlyRelease = true;
+                }
+            }
+
+            // Every humanized chord gets at least a tiny release difference
+            // when its note lengths leave room for one.  One anchor still
+            // remains at the MIDI's original release time.
+            if (!introducedEarlyRelease && count >= 2 && maxReleaseSpreadMs >= 1.0) {
+                size_t candidateIndex = (releaseAnchor + 1) % count;
+                LogicalNote& n = notes[group.members[candidateIndex]];
+                const double forcedEarlyMs = std::min(maxReleaseSpreadMs, std::max(1.0, maxReleaseSpreadMs * 0.45));
+                ns candidate = n.originalRelease - millisToNs(forcedEarlyMs);
+                const ns earliestSafeRelease = n.press->time + minimumNoteLength;
+                if (candidate < earliestSafeRelease)
+                    candidate = earliestSafeRelease;
+                if (candidate < n.release->time)
+                    n.release->time = candidate;
+            }
+        }
+    };
+
+    humanizeHandGroups(leftGroups, Hand::Left);
+    humanizeHandGroups(rightGroups, Hand::Right);
+
+    if (settings.SEQUENTIAL_ARTICULATION && settings.SEQUENTIAL_MAX_GAP_MS > 0) {
+        auto articulateGroups = [&](std::vector<HandGroup>& groups, Hand hand) {
+            for (size_t g = 0; g + 1 < groups.size(); ++g) {
+                auto& current = groups[g];
+                auto& next = groups[g + 1];
+                if (current.members.empty() || next.members.empty())
+                    continue;
+
+                ns nextPress = notes[next.members.front()].press->time;
+                for (size_t idx : next.members)
+                    nextPress = std::min(nextPress, notes[idx].press->time);
+
+                const double ioiMs = std::chrono::duration<double, std::milli>(
+                    next.originalStart - current.originalStart).count();
+                if (ioiMs <= 0.0)
+                    continue;
+
+                // Fast passages get a smaller gap so articulation never turns a
+                // run into staccato or changes the perceived tempo.
+                double speedCapMs = static_cast<double>(settings.SEQUENTIAL_MAX_GAP_MS);
+                if (ioiMs < 40.0)       speedCapMs = std::min(speedCapMs, 2.0);
+                else if (ioiMs < 70.0)  speedCapMs = std::min(speedCapMs, 3.5);
+                else if (ioiMs < 110.0) speedCapMs = std::min(speedCapMs, 5.5);
+                else if (ioiMs < 170.0) speedCapMs = std::min(speedCapMs, 7.5);
+
+                for (size_t idx : current.members) {
+                    LogicalNote& n = notes[idx];
+
+                    int nearestDistance = 127;
+                    bool samePitchNext = false;
+                    for (size_t nextIdx : next.members) {
+                        const int distance = std::abs(notes[nextIdx].pitch - n.pitch);
+                        nearestDistance = std::min(nearestDistance, distance);
+                        samePitchNext |= (distance == 0);
+                    }
+
+                    // Same-pitch repetitions are handled by the dedicated 15 ms
+                    // repeated-note correction after the humanizer.
+                    if (samePitchNext)
+                        continue;
+
+                    double intervalCapMs = speedCapMs;
+                    if (nearestDistance <= 2)      intervalCapMs = std::min(intervalCapMs, 3.0);
+                    else if (nearestDistance <= 5) intervalCapMs = std::min(intervalCapMs, 5.5);
+                    else if (nearestDistance <= 8) intervalCapMs = std::min(intervalCapMs, 7.0);
+                    else if (nearestDistance <= 12) intervalCapMs = std::min(intervalCapMs, 9.0);
+
+                    uint64_t seed = static_cast<uint64_t>(current.originalStart.count());
+                    seed ^= static_cast<uint64_t>((n.pitch + 3) * 193 + (nearestDistance + 1) * 389);
+                    seed ^= static_cast<uint64_t>(hand == Hand::Left ? 0x4c534551ULL : 0x52534551ULL);
+
+                    // Small stepwise motion is sometimes truly legato.  Larger
+                    // jumps almost always get a little air before the next key.
+                    const double zeroChance = nearestDistance <= 2 ? 0.16 : (nearestDistance <= 5 ? 0.07 : 0.03);
+                    if (unitRandom(seed ^ 0xC001ULL) < zeroChance)
+                        continue;
+
+                    const double gapMs = intervalCapMs *
+                        (0.58 + 0.42 * unitRandom(seed ^ 0xC101ULL));
+                    if (gapMs <= 0.0)
+                        continue;
+
+                    // Do not chop a deliberately sustained independent voice.
+                    // This feature targets notes whose Note Off is near the next
+                    // gesture (the robotic key-to-key transitions the user sees).
+                    if (n.originalRelease > next.originalStart + std::chrono::milliseconds(35))
+                        continue;
+
+                    ns targetRelease = nextPress - millisToNs(gapMs);
+                    const ns earliestSafeRelease = n.press->time + minimumNoteLength;
+                    if (targetRelease < earliestSafeRelease)
+                        targetRelease = earliestSafeRelease;
+
+                    if (targetRelease < nextPress && targetRelease < n.release->time)
+                        n.release->time = targetRelease;
+                }
+            }
+        };
+
+        articulateGroups(leftGroups, Hand::Left);
+        articulateGroups(rightGroups, Hand::Right);
+    }
+
+    // Humanization may have moved both Note On and Note Off timestamps.
+    std::stable_sort(note_buffer.begin(), note_buffer.end(),
+        [](const NoteEvent* a, const NoteEvent* b) {
+            if (a->time != b->time)
+                return a->time < b->time;
+            return a->action == EventType::Release && b->action == EventType::Press;
+        });
+}
+
+void VirtualPianoPlayer::apply_repeated_note_gap() {
+    const int repeatedGapMs = midi::Config::getInstance().playback.REPEATED_NOTE_GAP_MS;
+    if (repeatedGapMs <= 0)
+        return;
+
+    const auto desiredGap = std::chrono::milliseconds(repeatedGapMs);
+    const auto minimumNoteLength = std::chrono::milliseconds(1);
+
+    // Group by note name because press_key()/release_key() track the held state
+    // by the same note identity.  Humanization has already finalized every Note
+    // On timestamp, so the gap is measured against the actual upcoming press.
+    std::unordered_map<std::string, std::vector<NoteEvent*>> eventsByNote;
+    for (auto* event : note_buffer) {
+        if (!event->isSustain)
+            eventsByNote[std::string(event->note)].push_back(event);
+    }
+
+    const auto handlingMode = midi::Config::getInstance().playback.noteHandlingMode;
+    for (auto& [note, events] : eventsByNote) {
+        std::vector<NoteEvent*> activePresses;
+        std::unordered_map<NoteEvent*, NoteEvent*> releaseForPress;
+
+        std::stable_sort(events.begin(), events.end(),
+            [](const NoteEvent* a, const NoteEvent* b) {
+                if (a->time != b->time)
+                    return a->time < b->time;
+                return a->action == EventType::Release && b->action == EventType::Press;
+            });
+
+        for (auto* event : events) {
+            if (event->action == EventType::Press) {
+                activePresses.push_back(event);
+                continue;
+            }
+            if (activePresses.empty())
+                continue;
+
+            size_t pressIndex = 0;
+            if (handlingMode == midi::NoteHandlingMode::LIFO)
+                pressIndex = activePresses.size() - 1;
+
+            NoteEvent* matchedPress = activePresses[pressIndex];
+            releaseForPress[matchedPress] = event;
+            activePresses.erase(activePresses.begin() + static_cast<std::ptrdiff_t>(pressIndex));
+        }
+
+        std::vector<NoteEvent*> presses;
+        for (auto* event : events) {
+            if (event->action == EventType::Press)
+                presses.push_back(event);
+        }
+
+        for (size_t i = 0; i + 1 < presses.size(); ++i) {
+            NoteEvent* currentPress = presses[i];
+            NoteEvent* nextPress = presses[i + 1];
+            auto releaseIt = releaseForPress.find(currentPress);
+            if (releaseIt == releaseForPress.end())
+                continue;
+
+            NoteEvent* currentRelease = releaseIt->second;
+            auto targetRelease = nextPress->time - desiredGap;
+            const auto earliestRelease = currentPress->time + minimumNoteLength;
+            if (targetRelease < earliestRelease)
+                targetRelease = earliestRelease;
+
+            if (targetRelease < nextPress->time && targetRelease < currentRelease->time)
+                currentRelease->time = targetRelease;
+        }
     }
 }
 void VirtualPianoPlayer::play_notes() {

@@ -41,13 +41,34 @@ namespace midi {
         void validate() const;
     };
 
-    struct LegitModeSettings {
-        bool ENABLED = false;
-        double TIMING_VARIATION = 0.1;
-        double NOTE_SKIP_CHANCE = 0.02;
-        double EXTRA_DELAY_CHANCE = 0.05;
-        double EXTRA_DELAY_MIN = 0.05;
-        double EXTRA_DELAY_MAX = 0.2;
+    // Humanizer replaces the old/incomplete Legit Mode.  It changes only
+    // note timing inside the already-built playback queue; it never moves a
+    // note earlier than the MIDI says and never extends a note past its
+    // original Note Off.
+    struct HumanizerSettings {
+        bool ENABLED = true;
+
+        // Notes whose original Note On times fall inside this window are
+        // candidates for one physical hand/chord.  Two-note dyads count.
+        int CHORD_DETECTION_WINDOW_MS = 3;
+
+        // Maximum total stagger across one hand.  Actual spreads scale down
+        // for 2/3/4-note chords and for very fast passages.
+        int CHORD_PRESS_MAX_SPREAD_MS = 12;
+        int CHORD_RELEASE_MAX_SPREAD_MS = 8;
+
+        // Adjacent virtual fingers are occasionally allowed to land/lift at
+        // the same timestamp, which avoids a mechanically perfect roll.
+        int SIMULTANEOUS_FINGER_CHANCE_PERCENT = 28;
+
+        // Shorten a note slightly before the next note/group for the same
+        // inferred hand.  The next Note On itself is never delayed.
+        bool SEQUENTIAL_ARTICULATION = true;
+        int SEQUENTIAL_MAX_GAP_MS = 10;
+
+        // false = deterministic humanization for repeatable playback.
+        // true  = generate a different micro-performance each load/play.
+        bool RANDOMIZE_EACH_PLAY = false;
 
         void validate() const;
     };
@@ -103,7 +124,7 @@ namespace midi {
         MIDISettings midi;
         PlaybackSettings playback;
         VolumeSettings volume;
-        LegitModeSettings legit_mode;
+        HumanizerSettings humanizer;
         AutoTranspose auto_transpose;
         HotkeySettings hotkeys;
         UISettings ui;
@@ -135,8 +156,8 @@ namespace midi {
     // JSON conversion functions declarations
     void to_json(nlohmann::json& j, const VolumeSettings& v);
     void from_json(const nlohmann::json& j, VolumeSettings& v);
-    void to_json(nlohmann::json& j, const LegitModeSettings& l);
-    void from_json(const nlohmann::json& j, LegitModeSettings& l);
+    void to_json(nlohmann::json& j, const HumanizerSettings& h);
+    void from_json(const nlohmann::json& j, HumanizerSettings& h);
     void to_json(nlohmann::json& j, const AutoTranspose& l);
     void from_json(const nlohmann::json& j, AutoTranspose& l);
     void to_json(nlohmann::json& j, const MIDISettings& m);

@@ -17,16 +17,17 @@ namespace midi {
         if (ADJUSTMENT_INTERVAL_MS < 0) throw ConfigException("ADJUSTMENT_INTERVAL_MS cannot be negative");
     }
 
-    void LegitModeSettings::validate() const {
-        if (TIMING_VARIATION < 0.0 || TIMING_VARIATION > 1.0)
-            throw ConfigException("TIMING_VARIATION must be between 0.0 and 1.0");
-        if (NOTE_SKIP_CHANCE < 0.0 || NOTE_SKIP_CHANCE > 1.0)
-            throw ConfigException("NOTE_SKIP_CHANCE must be between 0.0 and 1.0");
-        if (EXTRA_DELAY_CHANCE < 0.0 || EXTRA_DELAY_CHANCE > 1.0)
-            throw ConfigException("EXTRA_DELAY_CHANCE must be between 0.0 and 1.0");
-        if (EXTRA_DELAY_MIN < 0.0) throw ConfigException("EXTRA_DELAY_MIN cannot be negative");
-        if (EXTRA_DELAY_MAX < EXTRA_DELAY_MIN)
-            throw ConfigException("EXTRA_DELAY_MAX cannot be less than EXTRA_DELAY_MIN");
+    void HumanizerSettings::validate() const {
+        if (CHORD_DETECTION_WINDOW_MS < 0 || CHORD_DETECTION_WINDOW_MS > 20)
+            throw ConfigException("CHORD_DETECTION_WINDOW_MS must be between 0 and 20");
+        if (CHORD_PRESS_MAX_SPREAD_MS < 0 || CHORD_PRESS_MAX_SPREAD_MS > 50)
+            throw ConfigException("CHORD_PRESS_MAX_SPREAD_MS must be between 0 and 50");
+        if (CHORD_RELEASE_MAX_SPREAD_MS < 0 || CHORD_RELEASE_MAX_SPREAD_MS > 50)
+            throw ConfigException("CHORD_RELEASE_MAX_SPREAD_MS must be between 0 and 50");
+        if (SIMULTANEOUS_FINGER_CHANCE_PERCENT < 0 || SIMULTANEOUS_FINGER_CHANCE_PERCENT > 100)
+            throw ConfigException("SIMULTANEOUS_FINGER_CHANCE_PERCENT must be between 0 and 100");
+        if (SEQUENTIAL_MAX_GAP_MS < 0 || SEQUENTIAL_MAX_GAP_MS > 50)
+            throw ConfigException("SEQUENTIAL_MAX_GAP_MS must be between 0 and 50");
     }
 
     void AutoTranspose::validate() const {
@@ -112,7 +113,7 @@ namespace midi {
             midi.validate();
             playback.validate();
             volume.validate();
-            legit_mode.validate();
+            humanizer.validate();
             auto_transpose.validate();
             hotkeys.validate();
             validateKeyMappings();
@@ -179,25 +180,31 @@ namespace midi {
         v.validate();
     }
 
-    void to_json(json& j, const LegitModeSettings& l) {
+    void to_json(json& j, const HumanizerSettings& h) {
         j = json{
-            {"ENABLED", l.ENABLED},
-            {"TIMING_VARIATION", l.TIMING_VARIATION},
-            {"NOTE_SKIP_CHANCE", l.NOTE_SKIP_CHANCE},
-            {"EXTRA_DELAY_CHANCE", l.EXTRA_DELAY_CHANCE},
-            {"EXTRA_DELAY_MIN", l.EXTRA_DELAY_MIN},
-            {"EXTRA_DELAY_MAX", l.EXTRA_DELAY_MAX}
+            {"ENABLED", h.ENABLED},
+            {"CHORD_DETECTION_WINDOW_MS", h.CHORD_DETECTION_WINDOW_MS},
+            {"CHORD_PRESS_MAX_SPREAD_MS", h.CHORD_PRESS_MAX_SPREAD_MS},
+            {"CHORD_RELEASE_MAX_SPREAD_MS", h.CHORD_RELEASE_MAX_SPREAD_MS},
+            {"SIMULTANEOUS_FINGER_CHANCE_PERCENT", h.SIMULTANEOUS_FINGER_CHANCE_PERCENT},
+            {"SEQUENTIAL_ARTICULATION", h.SEQUENTIAL_ARTICULATION},
+            {"SEQUENTIAL_MAX_GAP_MS", h.SEQUENTIAL_MAX_GAP_MS},
+            {"RANDOMIZE_EACH_PLAY", h.RANDOMIZE_EACH_PLAY}
         };
     }
 
-    void from_json(const json& j, LegitModeSettings& l) {
-        j.at("ENABLED").get_to(l.ENABLED);
-        j.at("TIMING_VARIATION").get_to(l.TIMING_VARIATION);
-        j.at("NOTE_SKIP_CHANCE").get_to(l.NOTE_SKIP_CHANCE);
-        j.at("EXTRA_DELAY_CHANCE").get_to(l.EXTRA_DELAY_CHANCE);
-        j.at("EXTRA_DELAY_MIN").get_to(l.EXTRA_DELAY_MIN);
-        j.at("EXTRA_DELAY_MAX").get_to(l.EXTRA_DELAY_MAX);
-        l.validate();
+    void from_json(const json& j, HumanizerSettings& h) {
+        // Every field is optional so an older/partial config can safely pick up
+        // tuned defaults as the humanizer evolves.
+        if (j.contains("ENABLED")) j.at("ENABLED").get_to(h.ENABLED);
+        if (j.contains("CHORD_DETECTION_WINDOW_MS")) j.at("CHORD_DETECTION_WINDOW_MS").get_to(h.CHORD_DETECTION_WINDOW_MS);
+        if (j.contains("CHORD_PRESS_MAX_SPREAD_MS")) j.at("CHORD_PRESS_MAX_SPREAD_MS").get_to(h.CHORD_PRESS_MAX_SPREAD_MS);
+        if (j.contains("CHORD_RELEASE_MAX_SPREAD_MS")) j.at("CHORD_RELEASE_MAX_SPREAD_MS").get_to(h.CHORD_RELEASE_MAX_SPREAD_MS);
+        if (j.contains("SIMULTANEOUS_FINGER_CHANCE_PERCENT")) j.at("SIMULTANEOUS_FINGER_CHANCE_PERCENT").get_to(h.SIMULTANEOUS_FINGER_CHANCE_PERCENT);
+        if (j.contains("SEQUENTIAL_ARTICULATION")) j.at("SEQUENTIAL_ARTICULATION").get_to(h.SEQUENTIAL_ARTICULATION);
+        if (j.contains("SEQUENTIAL_MAX_GAP_MS")) j.at("SEQUENTIAL_MAX_GAP_MS").get_to(h.SEQUENTIAL_MAX_GAP_MS);
+        if (j.contains("RANDOMIZE_EACH_PLAY")) j.at("RANDOMIZE_EACH_PLAY").get_to(h.RANDOMIZE_EACH_PLAY);
+        h.validate();
     }
 
     void to_json(json& j, const AutoTranspose& at) {
@@ -243,13 +250,15 @@ namespace midi {
     }
 
     void from_json(const nlohmann::json& j, HotkeySettings& h) {
-        j.at("SUSTAIN_KEY").get_to(h.SUSTAIN_KEY);
-        j.at("VOLUME_UP_KEY").get_to(h.VOLUME_UP_KEY);
-        j.at("VOLUME_DOWN_KEY").get_to(h.VOLUME_DOWN_KEY);
-        j.at("PLAY_PAUSE_KEY").get_to(h.PLAY_PAUSE_KEY);
-        j.at("REWIND_KEY").get_to(h.REWIND_KEY);
-        j.at("SKIP_KEY").get_to(h.SKIP_KEY);
-        j.at("EMERGENCY_EXIT_KEY").get_to(h.EMERGENCY_EXIT_KEY);
+        // Optional reads keep older R5 configs usable. Missing keys retain the
+        // defaults declared in HotkeySettings.
+        if (j.contains("SUSTAIN_KEY")) j.at("SUSTAIN_KEY").get_to(h.SUSTAIN_KEY);
+        if (j.contains("VOLUME_UP_KEY")) j.at("VOLUME_UP_KEY").get_to(h.VOLUME_UP_KEY);
+        if (j.contains("VOLUME_DOWN_KEY")) j.at("VOLUME_DOWN_KEY").get_to(h.VOLUME_DOWN_KEY);
+        if (j.contains("PLAY_PAUSE_KEY")) j.at("PLAY_PAUSE_KEY").get_to(h.PLAY_PAUSE_KEY);
+        if (j.contains("REWIND_KEY")) j.at("REWIND_KEY").get_to(h.REWIND_KEY);
+        if (j.contains("SKIP_KEY")) j.at("SKIP_KEY").get_to(h.SKIP_KEY);
+        if (j.contains("EMERGENCY_EXIT_KEY")) j.at("EMERGENCY_EXIT_KEY").get_to(h.EMERGENCY_EXIT_KEY);
         h.validate();
     }
     void to_json(json& j, const PlaybackSettings& p) {
@@ -290,7 +299,7 @@ namespace midi {
         j = json{
             {"VOLUME_SETTINGS", c.volume},
             {"KEY_MAPPINGS", c.key_mappings},
-            {"LEGIT_MODE_SETTINGS", c.legit_mode},
+            {"HUMANIZER_SETTINGS", c.humanizer},
             {"AUTO_TRANSPOSE", c.auto_transpose},
             {"HOTKEY_SETTINGS", c.hotkeys},
             {"MIDI_SETTINGS", json{{"FILTER_DRUMS", c.midi.FILTER_DRUMS}}},
@@ -312,10 +321,28 @@ namespace midi {
     void from_json(const json& j, Config& c) {
         j.at("VOLUME_SETTINGS").get_to(c.volume);
         j.at("KEY_MAPPINGS").get_to(c.key_mappings);
-        j.at("LEGIT_MODE_SETTINGS").get_to(c.legit_mode);
+        // Humanizer replaces the old Legit Mode.  A legacy config can still
+        // open: only its old ENABLED choice is migrated; the obsolete timing,
+        // skip and delay fields are intentionally ignored.
+        if (j.contains("HUMANIZER_SETTINGS")) {
+            j.at("HUMANIZER_SETTINGS").get_to(c.humanizer);
+        }
+        else if (j.contains("LEGIT_MODE_SETTINGS")) {
+            const auto& legacy = j.at("LEGIT_MODE_SETTINGS");
+            if (legacy.contains("ENABLED"))
+                legacy.at("ENABLED").get_to(c.humanizer.ENABLED);
+        }
         j.at("AUTO_TRANSPOSE").get_to(c.auto_transpose);
         j.at("HOTKEY_SETTINGS").get_to(c.hotkeys);
-        j.at("MIDI_SETTINGS").at("FILTER_DRUMS").get_to(c.midi.FILTER_DRUMS);
+        if (j.contains("MIDI_SETTINGS")) {
+            const auto& midiSettings = j.at("MIDI_SETTINGS");
+            if (midiSettings.contains("FILTER_DRUMS"))
+                midiSettings.at("FILTER_DRUMS").get_to(c.midi.FILTER_DRUMS);
+            else if (midiSettings.contains("DETECT_DRUMS"))
+                // Compatibility with the packaged R5 config naming.  In that
+                // build DETECT_DRUMS=false meant no drum filtering/detection.
+                midiSettings.at("DETECT_DRUMS").get_to(c.midi.FILTER_DRUMS);
+        }
 
         if (j.contains("STACKED_NOTE_HANDLING_MODE")) {
             std::string mode = j.at("STACKED_NOTE_HANDLING_MODE").get<std::string>();
@@ -365,14 +392,16 @@ namespace midi {
             50      // ADJUSTMENT_INTERVAL_MS
         };
 
-        // Legit mode settings
-        legit_mode = {
-            false,  // ENABLED
-            0.1,    // TIMING_VARIATION
-            0.02,   // NOTE_SKIP_CHANCE
-            0.05,   // EXTRA_DELAY_CHANCE
-            0.05,   // EXTRA_DELAY_MIN
-            0.2     // EXTRA_DELAY_MAX
+        // Humanizer settings
+        humanizer = {
+            true,   // ENABLED
+            3,      // CHORD_DETECTION_WINDOW_MS
+            12,     // CHORD_PRESS_MAX_SPREAD_MS
+            8,      // CHORD_RELEASE_MAX_SPREAD_MS
+            28,     // SIMULTANEOUS_FINGER_CHANCE_PERCENT
+            true,   // SEQUENTIAL_ARTICULATION
+            10,     // SEQUENTIAL_MAX_GAP_MS
+            false   // RANDOMIZE_EACH_PLAY
         };
 
         // AutoTranspose settings
