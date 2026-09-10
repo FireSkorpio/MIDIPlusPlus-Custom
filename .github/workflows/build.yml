@@ -1,0 +1,46 @@
+name: Build MIDI++ Custom
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Setup MSBuild
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Build MIDI++ Release x64
+        run: msbuild "MIDI++.sln" /m /p:Configuration=Release /p:Platform=x64
+
+      - name: Find built executable
+        shell: powershell
+        run: |
+          Write-Host "Searching for MIDI++.exe..."
+
+          $exe = Get-ChildItem -Path . -Recurse -Filter "MIDI++.exe" |
+            Where-Object { $_.FullName -match "Release" } |
+            Select-Object -First 1
+
+          if (-not $exe) {
+            throw "MIDI++.exe was not produced."
+          }
+
+          New-Item -ItemType Directory -Force -Path "dist"
+          Copy-Item $exe.FullName "dist\MIDI++.exe"
+
+          if (Test-Path "config.json") {
+            Copy-Item "config.json" "dist\config.json"
+          }
+
+          New-Item -ItemType Directory -Force -Path "dist\midi"
+
+      - name: Upload finished MIDI++
+        uses: actions/upload-artifact@v4
+        with:
+          name: MIDIPlusPlus-R5-Repeated-Note-Gap
+          path: dist
