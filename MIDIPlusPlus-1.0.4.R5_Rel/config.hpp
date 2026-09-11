@@ -5,11 +5,13 @@
 #include <stdexcept>
 #include <filesystem>
 #include <optional>
+#include <vector>
+#include <array>
+#include <cstdint>
 #include "json.hpp"
 
 namespace midi {
 
-    // Forward declarations
     class ConfigException : public std::runtime_error {
     public:
         explicit ConfigException(const std::string& message) : std::runtime_error(message) {}
@@ -30,7 +32,6 @@ namespace midi {
         NoHandling
     };
 
-    // Configuration structures
     struct VolumeSettings {
         int MIN_VOLUME = 10;
         int MAX_VOLUME = 200;
@@ -41,60 +42,56 @@ namespace midi {
         void validate() const;
     };
 
-    // Humanizer replaces the old/incomplete Legit Mode.  It changes only
-    // note timing inside the already-built playback queue; it never moves a
-    // note earlier than the MIDI says and never extends a note past its
-    // original Note Off.
+    // Humanizer changes only timing inside the already-built playback queue.
+    // It never moves a Note On earlier than the MIDI and never extends a Note
+    // Off past its original timestamp.
     struct HumanizerSettings {
         bool ENABLED = true;
 
-        // Notes whose original Note On times fall inside this window are
-        // candidates for one physical hand/chord. Two-note dyads count.
         int CHORD_DETECTION_WINDOW_MS = 3;
-
-        // Total onset/release spread across one hand. The humanizer chooses a
-        // value inside these ranges, then constrains it to what the MIDI can
-        // physically support without moving a Note On earlier or a Note Off later.
         int CHORD_PRESS_MIN_SPREAD_MS = 12;
         int CHORD_PRESS_MAX_SPREAD_MS = 36;
         int CHORD_RELEASE_MIN_SPREAD_MS = 8;
         int CHORD_RELEASE_MAX_SPREAD_MS = 26;
-
-        // Adjacent virtual fingers are occasionally allowed to land/lift at
-        // the same timestamp, which avoids a mechanically perfect roll.
         int SIMULTANEOUS_FINGER_CHANCE_PERCENT = 10;
 
-        // Humanize ordinary note-to-note movement as well as chords. If the
-        // next same-hand gesture begins within this many milliseconds of the
-        // current note's original release, MIDI++ may create a small key-up gap
-        // by releasing the current note early. The next Note On is never delayed.
         bool SEQUENTIAL_ARTICULATION = true;
         int SEQUENTIAL_TRIGGER_WINDOW_MS = 200;
         int SEQUENTIAL_MIN_GAP_MS = 8;
         int SEQUENTIAL_MAX_GAP_MS = 20;
 
-        // false = deterministic humanization for repeatable playback.
-        // true  = generate a different micro-performance each load/play.
+        // false = repeatable performance. true = a new timing pass every load.
         bool RANDOMIZE_EACH_PLAY = false;
 
+        // Used when RANDOMIZE_EACH_PLAY is false. The Humanizer popup can
+        // generate a new seed on demand, then keep that performance repeatable.
+        std::uint64_t PERFORMANCE_SEED = 0x6d6964692b2b4831ULL;
+
         void validate() const;
+    };
+
+    struct HumanizerPreset {
+        std::string name;
+        HumanizerSettings settings;
     };
 
     struct AutoTranspose {
         bool ENABLED = false;
-        std::string TRANSPOSE_UP_KEY = "VK_UP";   // Default to Up Arrow
-        std::string TRANSPOSE_DOWN_KEY = "VK_DOWN"; // Default to Down Arrow
+        std::string TRANSPOSE_UP_KEY = "VK_UP";
+        std::string TRANSPOSE_DOWN_KEY = "VK_DOWN";
 
         void validate() const;
     };
 
-
     struct UISettings {
         bool alwaysOnTop = false;
+        int opacity = 255;
+        std::string lastMidiDirectory = "midi";
+        std::vector<std::string> recentMidiFiles;
     };
+
     struct MIDISettings {
         bool FILTER_DRUMS = true;
-
         void validate() const;
     };
 
@@ -102,10 +99,10 @@ namespace midi {
         std::string SUSTAIN_KEY = "VK_SPACE";
         std::string VOLUME_UP_KEY = "VK_RIGHT";
         std::string VOLUME_DOWN_KEY = "VK_LEFT";
-        std::string PLAY_PAUSE_KEY = "VK_F1";      // Added default for play/pause
-        std::string REWIND_KEY = "VK_F2";          // Added default for rewind
-        std::string SKIP_KEY = "VK_F3";            // Added default for skip
-        std::string EMERGENCY_EXIT_KEY = "VK_F4"; // Added default for emergency exit
+        std::string PLAY_PAUSE_KEY = "VK_F1";
+        std::string REWIND_KEY = "VK_F2";
+        std::string SKIP_KEY = "VK_F3";
+        std::string PANIC_KEY = "VK_F4";
         void validate() const;
     };
 
@@ -114,13 +111,9 @@ namespace midi {
         std::array<int, 32> velocityValues;
     };
 
-    // Modify PlaybackSettings
     struct PlaybackSettings {
         VelocityCurveType velocityCurve = VelocityCurveType::LinearCoarse;
         NoteHandlingMode noteHandlingMode = NoteHandlingMode::LIFO;
-        // Minimum key-up time inserted before the next press of the same note.
-        // 0 disables the behavior. The next note is never delayed; instead,
-        // the previous note's release is moved earlier when necessary.
         int REPEATED_NOTE_GAP_MS = 15;
         std::vector<CustomVelocityCurve> customVelocityCurves;
         void validate() const;
@@ -128,10 +121,14 @@ namespace midi {
 
     class Config {
     public:
+        static constexpr std::size_t MAX_CUSTOM_HUMANIZER_PRESETS = 5;
+
         MIDISettings midi;
         PlaybackSettings playback;
         VolumeSettings volume;
         HumanizerSettings humanizer;
+        std::string activeHumanizerPreset = "Custom (Modified)";
+        std::vector<HumanizerPreset> customHumanizerPresets;
         AutoTranspose auto_transpose;
         HotkeySettings hotkeys;
         UISettings ui;
@@ -146,21 +143,21 @@ namespace midi {
         void validate() const;
         void setDefaults();
 
-        // Conversion methods made public and static
+        // Resolve portable relative paths beside MIDI++.exe rather than against
+        // whichever working directory happened to launch the program.
+        static std::filesystem::path resolvePath(const std::filesystem::path& path);
+
         static NoteHandlingMode stringToNoteHandlingMode(const std::string& mode);
         static std::string noteHandlingModeToString(NoteHandlingMode mode);
 
-        // Delete copy constructor and assignment operator
         Config(const Config&) = delete;
         Config& operator=(const Config&) = delete;
 
     private:
         Config() = default;
-
         void validateKeyMappings() const;
     };
 
-    // JSON conversion functions declarations
     void to_json(nlohmann::json& j, const VolumeSettings& v);
     void from_json(const nlohmann::json& j, VolumeSettings& v);
     void to_json(nlohmann::json& j, const HumanizerSettings& h);
