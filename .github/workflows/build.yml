@@ -1,4 +1,4 @@
-name: Build MIDI++ Humanizer
+name: Build MIDI++ Custom Build
 
 on:
   workflow_dispatch:
@@ -17,43 +17,32 @@ jobs:
       - name: Build MIDI++ Release x64
         run: msbuild "MIDIPlusPlus-1.0.4.R5_Rel\MIDI++.sln" /m /p:Configuration=Release /p:Platform=x64
 
-      - name: Prepare build artifact
+      - name: Prepare finished package
         shell: powershell
         run: |
-          Write-Host "Searching for MIDI++.exe..."
-
-          $exe = Get-ChildItem -Path . -Recurse -Filter "MIDI++.exe" |
-            Where-Object { $_.FullName -match "Release" } |
+          $src = "MIDIPlusPlus-1.0.4.R5_Rel"
+          $exe = Get-ChildItem -Path $src -Recurse -Filter "MIDI++.exe" |
+            Where-Object { $_.FullName -match "x64\\Release" } |
             Select-Object -First 1
 
           if (-not $exe) {
             throw "MIDI++.exe was not produced."
           }
 
-          Write-Host "Found executable:"
-          Write-Host $exe.FullName
+          if (-not (Test-Path "$src\config.json")) {
+            throw "config.json was not found."
+          }
 
           New-Item -ItemType Directory -Force -Path "dist"
-
           Copy-Item $exe.FullName "dist\MIDI++.exe"
+          Copy-Item "$src\config.json" "dist\config.json"
 
-          $config = "MIDIPlusPlus-1.0.4.R5_Rel\config.json"
-
-          if (Test-Path $config) {
-            Copy-Item $config "dist\config.json"
-          }
-          else {
-            throw "config.json was not found at $config"
-          }
-
-          New-Item -ItemType Directory -Force -Path "dist\midi"
-
-          Write-Host "Artifact contents:"
-          Get-ChildItem -Path "dist" -Recurse
+          Write-Host "Package contents:"
+          Get-ChildItem -Path "dist"
 
       - name: Upload finished MIDI++
         uses: actions/upload-artifact@v4
         with:
-          name: MIDIPlusPlus-R5-Humanizer
+          name: MIDIPlusPlus-Custom-Build
           path: dist
           if-no-files-found: error
