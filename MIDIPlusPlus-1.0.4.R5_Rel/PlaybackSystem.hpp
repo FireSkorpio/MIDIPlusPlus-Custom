@@ -128,7 +128,7 @@ private:
 // =====================================================
 class PlaybackControl {
 public:
-    enum class Command { NONE, SKIP, REWIND, RESTART };
+    enum class Command { NONE, SKIP, REWIND, SEEK, RESTART };
     struct State {
         std::chrono::nanoseconds position{ 0 };
         size_t event_index{ 0 };
@@ -137,12 +137,14 @@ public:
 
     void requestSkip(std::chrono::seconds amount);
     void requestRewind(std::chrono::seconds amount);
+    void requestSeek(std::chrono::nanoseconds position);
     bool hasCommand() const;
     State processCommand(const State& current_state, double speed, size_t buffer_size);
 private:
     mutable std::mutex mutex;
     Command pending_command{ Command::NONE };
     std::chrono::seconds command_amount{ 0 };
+    std::chrono::nanoseconds command_position{ 0 };
     std::atomic<bool> command_processed{ true };
 };
 
@@ -173,6 +175,7 @@ public:
     void toggle_play_pause();
     void skip(std::chrono::seconds duration);
     void rewind(std::chrono::seconds duration);
+    void seek_to(std::chrono::nanoseconds position);
     void restart_song();
     void speed_up();
     void slow_down();
@@ -184,6 +187,7 @@ public:
     int  toggle_transpose_adjustment();
     // Other operations
     void release_all_keys();
+    void panic();
     void calibrate_volume();
     void process_tracks(const MidiFile& midi_file);
 
@@ -246,14 +250,13 @@ public:
     WORD pause_key_code{ 0 };
     WORD rewind_key_code{ 0 };
     WORD skip_key_code{ 0 };
-    WORD emergency_exit_key_code{ 0 };
+    WORD panic_key_code{ 0 };
     std::atomic<int> current_volume{ 0 };
     std::atomic<int> max_volume{ 0 };
     std::vector<bool> drum_flags;
     std::unique_ptr<std::jthread> hotkey_thread;
     std::atomic<bool> hotkey_stop{ false }; // new flag for hotkey thread
     void hotkey_listener();
-    void emergency_exit();
     bool isTrackEnabled(int trackIndex) const;
     WORD vkToScanCode(int vk);
     std::condition_variable playback_cv;

@@ -314,6 +314,14 @@ void PlaybackControl::requestRewind(std::chrono::seconds amount) {
     SetEvent(VirtualPianoPlayer::command_event); // Signal command event
 }
 
+void PlaybackControl::requestSeek(std::chrono::nanoseconds position) {
+    std::lock_guard<std::mutex> lock(mutex);
+    pending_command = Command::SEEK;
+    command_position = std::max(position, std::chrono::nanoseconds::zero());
+    command_processed.store(false, std::memory_order_release);
+    SetEvent(VirtualPianoPlayer::command_event);
+}
+
 bool PlaybackControl::hasCommand() const {
     return (pending_command != Command::NONE) && !command_processed.load(std::memory_order_acquire);
 }
@@ -334,6 +342,10 @@ PlaybackControl::State PlaybackControl::processCommand(const State& current_stat
     case Command::REWIND:
         new_state.position = (scaled > new_state.position) ? std::chrono::nanoseconds(0)
             : new_state.position - scaled;
+        new_state.needs_reset = true;
+        break;
+    case Command::SEEK:
+        new_state.position = command_position;
         new_state.needs_reset = true;
         break;
     default:
@@ -374,12 +386,15 @@ VirtualPianoPlayer::VirtualPianoPlayer() noexcept(false)
         // for this launch only.
         std::cerr << "Configuration error: " << e.what() << "\nUsing defaults for this launch only.\n";
         try {
-            if (std::filesystem::exists("config.json")) {
+            const auto configPath = midi::Config::resolvePath("config.json");
+            const auto backupPath = configPath.parent_path() / "config.invalid.backup.json";
+            const auto errorPath = configPath.parent_path() / "config_error.txt";
+            if (std::filesystem::exists(configPath)) {
                 std::filesystem::copy_file(
-                    "config.json", "config.invalid.backup.json",
+                    configPath, backupPath,
                     std::filesystem::copy_options::overwrite_existing);
             }
-            std::ofstream errorFile("config_error.txt", std::ios::trunc);
+            std::ofstream errorFile(errorPath, std::ios::trunc);
             if (errorFile)
                 errorFile << "MIDI++ Custom Build config load error:\n" << e.what() << "\n";
         }
@@ -541,7 +556,7 @@ void VirtualPianoPlayer::apply_humanizer() {
         return x ^ (x >> 31);
     };
 
-    uint64_t sessionSeed = 0x6d6964692b2b4831ULL; // "midi++H1"
+    uint64_t sessionSeed = settings.PERFORMANCE_SEED;
     if (settings.RANDOMIZE_EACH_PLAY) {
         sessionSeed ^= static_cast<uint64_t>(
             std::chrono::high_resolution_clock::now().time_since_epoch().count());
@@ -1850,6 +1865,25 @@ void VirtualPianoPlayer::add_note_event(std::chrono::nanoseconds time, std::stri
         velocity, trackIndex });
 }
 
+void VirtualPianoPlayer::seek_to(std::chrono::nanoseconds position) {
+    if (!midiFileSelected.load(std::memory_order_acquire))
+        return;
+
+    release_all_keys();
+    const auto total = note_buffer.empty() ? std::chrono::nanoseconds::zero() : note_buffer.back()->time;
+    position = std::clamp(position, std::chrono::nanoseconds::zero(), total);
+
+    if (!playback_started.load(std::memory_order_acquire) || !playback_thread) {
+        total_adjusted_time = position;
+        buffer_index.store(find_next_event_index(position), std::memory_order_release);
+        last_resume_tsc = __rdtsc();
+        return;
+    }
+
+    playback_control.requestSeek(position);
+    signalPlayback();
+}
+
 void VirtualPianoPlayer::speed_up() {
     adjust_playback_speed(1.1);
 }
@@ -1895,53 +1929,51 @@ void VirtualPianoPlayer::arrowsend(WORD sc, bool extended) {
     NtUserSendInputCall(2, in, sizeof(INPUT));
 }
 void VirtualPianoPlayer::hotkey_listener() {
-
     int playPauseVK = stringToVK(midi::Config::getInstance().hotkeys.PLAY_PAUSE_KEY);
     int rewindVK = stringToVK(midi::Config::getInstance().hotkeys.REWIND_KEY);
     int skipVK = stringToVK(midi::Config::getInstance().hotkeys.SKIP_KEY);
-    int emergencyExitVK = stringToVK(midi::Config::getInstance().hotkeys.EMERGENCY_EXIT_KEY);
+    int panicVK = stringToVK(midi::Config::getInstance().hotkeys.PANIC_KEY);
 
-    bool wasPlayPause = false, wasRewind = false, wasSkip = false, wasEmergency = false;
+    bool wasPlayPause = false, wasRewind = false, wasSkip = false, wasPanic = false;
 
     while (!hotkey_stop.load(std::memory_order_acquire)) {
         bool playPauseDown = (GetAsyncKeyState(playPauseVK) & 0x8000) != 0;
         bool rewindDown = (GetAsyncKeyState(rewindVK) & 0x8000) != 0;
         bool skipDown = (GetAsyncKeyState(skipVK) & 0x8000) != 0;
-        bool emergencyDown = (GetAsyncKeyState(emergencyExitVK) & 0x8000) != 0;
+        bool panicDown = (GetAsyncKeyState(panicVK) & 0x8000) != 0;
 
-        if (playPauseDown && !wasPlayPause) {
-           // std::cout << "[DEBUG] F1 pressed (PLAY/PAUSE)\n";
+        if (playPauseDown && !wasPlayPause)
             toggle_play_pause();
-        }
-        if (rewindDown && !wasRewind) {
-           // std::cout << "[DEBUG] F2 pressed (REWIND)\n";
+        if (rewindDown && !wasRewind)
             rewind(std::chrono::seconds(10));
-        }
-        if (skipDown && !wasSkip) {
-           // std::cout << "[DEBUG] F3 pressed (SKIP)\n";
+        if (skipDown && !wasSkip)
             skip(std::chrono::seconds(10));
-        }
-        if (emergencyDown && !wasEmergency) {
-          //  std::cout << "[DEBUG] F4 pressed (EMERGENCY EXIT)\n";
-            emergency_exit();
-        }
+        if (panicDown && !wasPanic)
+            panic();
 
         wasPlayPause = playPauseDown;
         wasRewind = rewindDown;
         wasSkip = skipDown;
-        wasEmergency = emergencyDown;
-
+        wasPanic = panicDown;
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
 }
 
-void VirtualPianoPlayer::emergency_exit() {
-    std::cout << "[EMERGENCY] Emergency exit triggered. Stopping playback and exiting.\n";
-    should_stop.store(true, std::memory_order_release);
+void VirtualPianoPlayer::panic() {
+    const bool wasPlaying = !paused.exchange(true, std::memory_order_acq_rel);
+    if (wasPlaying && playback_started.load(std::memory_order_acquire)) {
+        const unsigned long long currentTsc = __rdtsc();
+        const unsigned long long tickDiff = currentTsc - last_resume_tsc;
+        const double elapsedSeconds = static_cast<double>(tickDiff) * inv_cpu_freq;
+        const auto elapsedNs = static_cast<std::chrono::nanoseconds::rep>(
+            elapsedSeconds * 1e9 * current_speed + 0.5);
+        total_adjusted_time += std::chrono::nanoseconds(elapsedNs);
+    }
     release_all_keys();
-    signalPlayback(); 
-    std::exit(1);
+    signalPlayback();
+    std::cout << "[PANIC] Released all notes and paused playback. MIDI++ remains open.\n";
 }
+
 void VirtualPianoPlayer::initializeKeyCache() {
     static thread_local std::unordered_map<std::string, KeySequence> keyCache;
     for (const auto& [note, key] : limited_key_mappings)

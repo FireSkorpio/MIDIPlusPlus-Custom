@@ -2,6 +2,7 @@
 #include <fstream>
 #include <iostream>
 #include <algorithm>
+#include <windows.h>
 
 namespace midi {
 
@@ -65,7 +66,7 @@ namespace midi {
         validateKey(PLAY_PAUSE_KEY);
         validateKey(REWIND_KEY);
         validateKey(SKIP_KEY);
-        validateKey(EMERGENCY_EXIT_KEY);
+        validateKey(PANIC_KEY);
     }
 
     void PlaybackSettings::validate() const {
@@ -91,13 +92,27 @@ namespace midi {
         return instance;
     }
 
+    std::filesystem::path Config::resolvePath(const std::filesystem::path& path) {
+        if (path.is_absolute())
+            return path;
+
+        wchar_t modulePath[32768]{};
+        DWORD len = GetModuleFileNameW(nullptr, modulePath, static_cast<DWORD>(std::size(modulePath)));
+        if (len == 0 || len >= std::size(modulePath))
+            return path;
+
+        std::filesystem::path exeDir = std::filesystem::path(modulePath).parent_path();
+        return exeDir / path;
+    }
+
     void Config::loadFromFile(const std::filesystem::path& path) {
-        if (!std::filesystem::exists(path)) {
-            throw ConfigException("Config file not found: " + path.string());
+        const auto resolvedPath = resolvePath(path);
+        if (!std::filesystem::exists(resolvedPath)) {
+            throw ConfigException("Config file not found: " + resolvedPath.string());
         }
 
         try {
-            std::ifstream file(path);
+            std::ifstream file(resolvedPath);
             json j;
             file >> j;
             from_json(j, *this);
@@ -112,7 +127,8 @@ namespace midi {
         try {
             json j;
             to_json(j, *this);
-            std::ofstream file(path);
+            const auto resolvedPath = resolvePath(path);
+            std::ofstream file(resolvedPath);
             file << j.dump(4);
         }
         catch (const std::exception& e) {
@@ -126,6 +142,13 @@ namespace midi {
             playback.validate();
             volume.validate();
             humanizer.validate();
+            if (customHumanizerPresets.size() > MAX_CUSTOM_HUMANIZER_PRESETS)
+                throw ConfigException("A maximum of 5 custom Humanizer presets is supported");
+            for (const auto& preset : customHumanizerPresets) {
+                if (preset.name.empty())
+                    throw ConfigException("Custom Humanizer preset names cannot be empty");
+                preset.settings.validate();
+            }
             auto_transpose.validate();
             hotkeys.validate();
             validateKeyMappings();
@@ -205,7 +228,8 @@ namespace midi {
             {"SEQUENTIAL_TRIGGER_WINDOW_MS", h.SEQUENTIAL_TRIGGER_WINDOW_MS},
             {"SEQUENTIAL_MIN_GAP_MS", h.SEQUENTIAL_MIN_GAP_MS},
             {"SEQUENTIAL_MAX_GAP_MS", h.SEQUENTIAL_MAX_GAP_MS},
-            {"RANDOMIZE_EACH_PLAY", h.RANDOMIZE_EACH_PLAY}
+            {"RANDOMIZE_EACH_PLAY", h.RANDOMIZE_EACH_PLAY},
+            {"PERFORMANCE_SEED", h.PERFORMANCE_SEED}
         };
     }
 
@@ -223,6 +247,7 @@ namespace midi {
         if (j.contains("SEQUENTIAL_MIN_GAP_MS")) j.at("SEQUENTIAL_MIN_GAP_MS").get_to(h.SEQUENTIAL_MIN_GAP_MS);
         if (j.contains("SEQUENTIAL_MAX_GAP_MS")) j.at("SEQUENTIAL_MAX_GAP_MS").get_to(h.SEQUENTIAL_MAX_GAP_MS);
         if (j.contains("RANDOMIZE_EACH_PLAY")) j.at("RANDOMIZE_EACH_PLAY").get_to(h.RANDOMIZE_EACH_PLAY);
+        if (j.contains("PERFORMANCE_SEED")) j.at("PERFORMANCE_SEED").get_to(h.PERFORMANCE_SEED);
 
         auto clampMs = [](int& value) { value = std::clamp(value, 0, 1000); };
         clampMs(h.CHORD_DETECTION_WINDOW_MS);
@@ -268,11 +293,26 @@ namespace midi {
         m.validate();
     }
     void to_json(nlohmann::json& j, const UISettings& ui) {
-        j = nlohmann::json{ {"alwaysOnTop", ui.alwaysOnTop} };
+        j = nlohmann::json{
+            {"alwaysOnTop", ui.alwaysOnTop},
+            {"opacity", ui.opacity},
+            {"lastMidiDirectory", ui.lastMidiDirectory},
+            {"recentMidiFiles", ui.recentMidiFiles}
+        };
     }
 
     void from_json(const nlohmann::json& j, UISettings& ui) {
-        j.at("alwaysOnTop").get_to(ui.alwaysOnTop);
+        if (j.contains("alwaysOnTop")) j.at("alwaysOnTop").get_to(ui.alwaysOnTop);
+        if (j.contains("opacity")) j.at("opacity").get_to(ui.opacity);
+        if (j.contains("lastMidiDirectory")) j.at("lastMidiDirectory").get_to(ui.lastMidiDirectory);
+        if (j.contains("recentMidiFiles") && j.at("recentMidiFiles").is_array()) {
+            ui.recentMidiFiles.clear();
+            for (const auto& item : j.at("recentMidiFiles")) {
+                if (item.is_string() && ui.recentMidiFiles.size() < 5)
+                    ui.recentMidiFiles.push_back(item.get<std::string>());
+            }
+        }
+        ui.opacity = std::clamp(ui.opacity, 100, 255);
     }
 
     void to_json(nlohmann::json& j, const HotkeySettings& h) {
@@ -283,20 +323,21 @@ namespace midi {
             {"PLAY_PAUSE_KEY", h.PLAY_PAUSE_KEY},
             {"REWIND_KEY", h.REWIND_KEY},
             {"SKIP_KEY", h.SKIP_KEY},
-            {"EMERGENCY_EXIT_KEY", h.EMERGENCY_EXIT_KEY}
+            {"PANIC_KEY", h.PANIC_KEY}
         };
     }
 
     void from_json(const nlohmann::json& j, HotkeySettings& h) {
-        // Optional reads keep older R5 configs usable. Missing keys retain the
-        // defaults declared in HotkeySettings.
         if (j.contains("SUSTAIN_KEY")) j.at("SUSTAIN_KEY").get_to(h.SUSTAIN_KEY);
         if (j.contains("VOLUME_UP_KEY")) j.at("VOLUME_UP_KEY").get_to(h.VOLUME_UP_KEY);
         if (j.contains("VOLUME_DOWN_KEY")) j.at("VOLUME_DOWN_KEY").get_to(h.VOLUME_DOWN_KEY);
         if (j.contains("PLAY_PAUSE_KEY")) j.at("PLAY_PAUSE_KEY").get_to(h.PLAY_PAUSE_KEY);
         if (j.contains("REWIND_KEY")) j.at("REWIND_KEY").get_to(h.REWIND_KEY);
         if (j.contains("SKIP_KEY")) j.at("SKIP_KEY").get_to(h.SKIP_KEY);
-        if (j.contains("EMERGENCY_EXIT_KEY")) j.at("EMERGENCY_EXIT_KEY").get_to(h.EMERGENCY_EXIT_KEY);
+        if (j.contains("PANIC_KEY"))
+            j.at("PANIC_KEY").get_to(h.PANIC_KEY);
+        else if (j.contains("EMERGENCY_EXIT_KEY"))
+            j.at("EMERGENCY_EXIT_KEY").get_to(h.PANIC_KEY);
         h.validate();
     }
     void to_json(json& j, const PlaybackSettings& p) {
@@ -324,6 +365,7 @@ namespace midi {
         }
         //TODO: validate here probably too
         if (j.contains("CUSTOM_VELOCITY_CURVES")) {
+            p.customVelocityCurves.clear();
             for (const auto& curveJson : j["CUSTOM_VELOCITY_CURVES"]) {
                 CustomVelocityCurve customCurve;
                 customCurve.name = curveJson["name"].get<std::string>();
@@ -339,6 +381,8 @@ namespace midi {
             {"VOLUME_SETTINGS", c.volume},
             {"KEY_MAPPINGS", c.key_mappings},
             {"HUMANIZER_SETTINGS", c.humanizer},
+            {"HUMANIZER_ACTIVE_PRESET", c.activeHumanizerPreset},
+            {"HUMANIZER_PRESETS", json::array()},
             {"AUTO_TRANSPOSE", c.auto_transpose},
             {"HOTKEY_SETTINGS", c.hotkeys},
             {"MIDI_SETTINGS", json{{"FILTER_DRUMS", c.midi.FILTER_DRUMS}}},
@@ -353,6 +397,12 @@ namespace midi {
             j["CUSTOM_VELOCITY_CURVES"].push_back({
                 {"name", curve.name},
                 {"values", curve.velocityValues}
+                });
+        }
+        for (const auto& preset : c.customHumanizerPresets) {
+            j["HUMANIZER_PRESETS"].push_back({
+                {"name", preset.name},
+                {"settings", preset.settings}
                 });
         }
     }
@@ -371,6 +421,26 @@ namespace midi {
             if (legacy.contains("ENABLED"))
                 legacy.at("ENABLED").get_to(c.humanizer.ENABLED);
         }
+
+        c.activeHumanizerPreset = "Custom (Modified)";
+        if (j.contains("HUMANIZER_ACTIVE_PRESET") && j.at("HUMANIZER_ACTIVE_PRESET").is_string())
+            j.at("HUMANIZER_ACTIVE_PRESET").get_to(c.activeHumanizerPreset);
+
+        c.customHumanizerPresets.clear();
+        if (j.contains("HUMANIZER_PRESETS") && j.at("HUMANIZER_PRESETS").is_array()) {
+            for (const auto& item : j.at("HUMANIZER_PRESETS")) {
+                if (c.customHumanizerPresets.size() >= Config::MAX_CUSTOM_HUMANIZER_PRESETS)
+                    break;
+                if (!item.contains("name") || !item.contains("settings"))
+                    continue;
+                HumanizerPreset preset;
+                item.at("name").get_to(preset.name);
+                item.at("settings").get_to(preset.settings);
+                if (!preset.name.empty())
+                    c.customHumanizerPresets.push_back(std::move(preset));
+            }
+        }
+
         j.at("AUTO_TRANSPOSE").get_to(c.auto_transpose);
         j.at("HOTKEY_SETTINGS").get_to(c.hotkeys);
         if (j.contains("MIDI_SETTINGS")) {
@@ -432,21 +502,23 @@ namespace midi {
             50      // ADJUSTMENT_INTERVAL_MS
         };
 
-        // Humanizer settings
-        humanizer = {
-            true,   // ENABLED
-            3,      // CHORD_DETECTION_WINDOW_MS
-            12,     // CHORD_PRESS_MIN_SPREAD_MS
-            36,     // CHORD_PRESS_MAX_SPREAD_MS
-            8,      // CHORD_RELEASE_MIN_SPREAD_MS
-            26,     // CHORD_RELEASE_MAX_SPREAD_MS
-            10,     // SIMULTANEOUS_FINGER_CHANCE_PERCENT
-            true,   // SEQUENTIAL_ARTICULATION
-            200,    // SEQUENTIAL_TRIGGER_WINDOW_MS
-            8,      // SEQUENTIAL_MIN_GAP_MS
-            20,     // SEQUENTIAL_MAX_GAP_MS
-            false   // RANDOMIZE_EACH_PLAY
-        };
+        // Humanizer settings - Casual is the visible, hobby-player preset.
+        humanizer = HumanizerSettings{};
+        humanizer.ENABLED = true;
+        humanizer.CHORD_DETECTION_WINDOW_MS = 50;
+        humanizer.CHORD_PRESS_MIN_SPREAD_MS = 32;
+        humanizer.CHORD_PRESS_MAX_SPREAD_MS = 78;
+        humanizer.CHORD_RELEASE_MIN_SPREAD_MS = 25;
+        humanizer.CHORD_RELEASE_MAX_SPREAD_MS = 64;
+        humanizer.SIMULTANEOUS_FINGER_CHANCE_PERCENT = 10;
+        humanizer.SEQUENTIAL_ARTICULATION = true;
+        humanizer.SEQUENTIAL_TRIGGER_WINDOW_MS = 200;
+        humanizer.SEQUENTIAL_MIN_GAP_MS = 40;
+        humanizer.SEQUENTIAL_MAX_GAP_MS = 100;
+        humanizer.RANDOMIZE_EACH_PLAY = false;
+        humanizer.PERFORMANCE_SEED = 0x6d6964692b2b4831ULL;
+        activeHumanizerPreset = "Casual";
+        customHumanizerPresets.clear();
 
         // AutoTranspose settings
         auto_transpose = {
@@ -461,16 +533,12 @@ namespace midi {
         // Playback settings
         playback.REPEATED_NOTE_GAP_MS = 15;
 
-        // Hotkey settings (updated with additional keys)
-        hotkeys = {
-            "VK_SPACE",    // SUSTAIN_KEY
-            "VK_RIGHT",    // VOLUME_UP_KEY
-            "VK_LEFT",     // VOLUME_DOWN_KEY
-            "VK_F1",        // PLAY_PAUSE_KEY
-            "VK_F2",        // REWIND_KEY
-            "VK_F3",        // SKIP_KEY
-            "VK_F4"    // EMERGENCY_EXIT_KEY
-        };
+        // Hotkey settings. F4 is a safe panic instead of terminating MIDI++.
+        hotkeys = HotkeySettings{};
+
+        ui.opacity = 255;
+        ui.lastMidiDirectory = "midi";
+        ui.recentMidiFiles.clear();
 
         // Setup default LIMITED key mappings
         key_mappings["LIMITED"] = {

@@ -6,13 +6,13 @@
     },
     "CUSTOM_VELOCITY_CURVES": [],
     "HOTKEY_SETTINGS": {
-        "EMERGENCY_EXIT_KEY": "VK_F4",
         "PLAY_PAUSE_KEY": "VK_F1",
         "REWIND_KEY": "VK_F2",
         "SKIP_KEY": "VK_F3",
         "SUSTAIN_KEY": "VK_SPACE",
         "VOLUME_DOWN_KEY": "VK_LEFT",
-        "VOLUME_UP_KEY": "VK_RIGHT"
+        "VOLUME_UP_KEY": "VK_RIGHT",
+        "PANIC_KEY": "VK_F4"
     },
     "KEY_MAPPINGS": {
         "FULL": {
@@ -171,17 +171,18 @@
     },
     "HUMANIZER_SETTINGS": {
         "ENABLED": true,
-        "CHORD_DETECTION_WINDOW_MS": 3,
-        "CHORD_PRESS_MIN_SPREAD_MS": 12,
-        "CHORD_PRESS_MAX_SPREAD_MS": 36,
-        "CHORD_RELEASE_MIN_SPREAD_MS": 8,
-        "CHORD_RELEASE_MAX_SPREAD_MS": 26,
+        "CHORD_DETECTION_WINDOW_MS": 50,
+        "CHORD_PRESS_MIN_SPREAD_MS": 32,
+        "CHORD_PRESS_MAX_SPREAD_MS": 78,
+        "CHORD_RELEASE_MIN_SPREAD_MS": 25,
+        "CHORD_RELEASE_MAX_SPREAD_MS": 64,
         "SIMULTANEOUS_FINGER_CHANCE_PERCENT": 10,
         "SEQUENTIAL_ARTICULATION": true,
         "SEQUENTIAL_TRIGGER_WINDOW_MS": 200,
-        "SEQUENTIAL_MIN_GAP_MS": 8,
-        "SEQUENTIAL_MAX_GAP_MS": 20,
-        "RANDOMIZE_EACH_PLAY": false
+        "SEQUENTIAL_MIN_GAP_MS": 40,
+        "SEQUENTIAL_MAX_GAP_MS": 100,
+        "RANDOMIZE_EACH_PLAY": false,
+        "PERFORMANCE_SEED": 7883943025547364401
     },
     "MIDI_SETTINGS": {
         "FILTER_DRUMS": true
@@ -190,7 +191,10 @@
     "STACKED_NOTE_HANDLING_MODE": "LIFO",
     "REPEATED_NOTE_GAP_MS": 15,
     "UI_SETTINGS": {
-        "alwaysOnTop": true
+        "alwaysOnTop": true,
+        "opacity": 255,
+        "lastMidiDirectory": "midi",
+        "recentMidiFiles": []
     },
     "VOLUME_SETTINGS": {
         "ADJUSTMENT_INTERVAL_MS": 50,
@@ -198,5 +202,7 @@
         "MAX_VOLUME": 200,
         "MIN_VOLUME": 10,
         "VOLUME_STEP": 10
-    }
+    },
+    "HUMANIZER_ACTIVE_PRESET": "Casual",
+    "HUMANIZER_PRESETS": []
 }

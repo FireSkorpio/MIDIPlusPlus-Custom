@@ -29,3 +29,14 @@ This repository-ready update is based on MIDI++ v1.0.4.R5 and the previously tes
 - Sequential trigger: 200 ms
 - Sequential gap: 8-20 ms
 - Repeated-note gap: 15 ms
+
+## QoL update
+
+- Professional / Intermediate / Casual Humanizer presets.
+- Up to five saved custom Humanizer presets with rename/update/delete.
+- Automatic MIDI rebuild on preset changes and Apply.
+- Repeatable Humanizer performance seeds and New Performance.
+- F4 Panic / Release All Notes instead of closing MIDI++.
+- Seek bar, Reload Current MIDI, drag-and-drop loading, recent MIDI list, session opacity/folder memory, tooltips, and expanded MIDI details.
+- Portable config path handling and backward migration from EMERGENCY_EXIT_KEY to PANIC_KEY.
+- Virtual MIDI integration is intentionally not included.
