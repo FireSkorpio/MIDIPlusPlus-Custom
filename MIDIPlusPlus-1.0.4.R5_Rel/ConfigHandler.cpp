@@ -18,16 +18,28 @@ namespace midi {
     }
 
     void HumanizerSettings::validate() const {
-        if (CHORD_DETECTION_WINDOW_MS < 0 || CHORD_DETECTION_WINDOW_MS > 20)
-            throw ConfigException("CHORD_DETECTION_WINDOW_MS must be between 0 and 20");
-        if (CHORD_PRESS_MAX_SPREAD_MS < 0 || CHORD_PRESS_MAX_SPREAD_MS > 50)
-            throw ConfigException("CHORD_PRESS_MAX_SPREAD_MS must be between 0 and 50");
-        if (CHORD_RELEASE_MAX_SPREAD_MS < 0 || CHORD_RELEASE_MAX_SPREAD_MS > 50)
-            throw ConfigException("CHORD_RELEASE_MAX_SPREAD_MS must be between 0 and 50");
+        auto validateMs = [](int value, const char* name) {
+            if (value < 0 || value > 1000)
+                throw ConfigException(std::string(name) + " must be between 0 and 1000");
+        };
+
+        validateMs(CHORD_DETECTION_WINDOW_MS, "CHORD_DETECTION_WINDOW_MS");
+        validateMs(CHORD_PRESS_MIN_SPREAD_MS, "CHORD_PRESS_MIN_SPREAD_MS");
+        validateMs(CHORD_PRESS_MAX_SPREAD_MS, "CHORD_PRESS_MAX_SPREAD_MS");
+        validateMs(CHORD_RELEASE_MIN_SPREAD_MS, "CHORD_RELEASE_MIN_SPREAD_MS");
+        validateMs(CHORD_RELEASE_MAX_SPREAD_MS, "CHORD_RELEASE_MAX_SPREAD_MS");
+        validateMs(SEQUENTIAL_TRIGGER_WINDOW_MS, "SEQUENTIAL_TRIGGER_WINDOW_MS");
+        validateMs(SEQUENTIAL_MIN_GAP_MS, "SEQUENTIAL_MIN_GAP_MS");
+        validateMs(SEQUENTIAL_MAX_GAP_MS, "SEQUENTIAL_MAX_GAP_MS");
+
         if (SIMULTANEOUS_FINGER_CHANCE_PERCENT < 0 || SIMULTANEOUS_FINGER_CHANCE_PERCENT > 100)
             throw ConfigException("SIMULTANEOUS_FINGER_CHANCE_PERCENT must be between 0 and 100");
-        if (SEQUENTIAL_MAX_GAP_MS < 0 || SEQUENTIAL_MAX_GAP_MS > 50)
-            throw ConfigException("SEQUENTIAL_MAX_GAP_MS must be between 0 and 50");
+        if (CHORD_PRESS_MIN_SPREAD_MS > CHORD_PRESS_MAX_SPREAD_MS)
+            throw ConfigException("CHORD_PRESS_MIN_SPREAD_MS cannot exceed CHORD_PRESS_MAX_SPREAD_MS");
+        if (CHORD_RELEASE_MIN_SPREAD_MS > CHORD_RELEASE_MAX_SPREAD_MS)
+            throw ConfigException("CHORD_RELEASE_MIN_SPREAD_MS cannot exceed CHORD_RELEASE_MAX_SPREAD_MS");
+        if (SEQUENTIAL_MIN_GAP_MS > SEQUENTIAL_MAX_GAP_MS)
+            throw ConfigException("SEQUENTIAL_MIN_GAP_MS cannot exceed SEQUENTIAL_MAX_GAP_MS");
     }
 
     void AutoTranspose::validate() const {
@@ -57,8 +69,8 @@ namespace midi {
     }
 
     void PlaybackSettings::validate() const {
-        if (REPEATED_NOTE_GAP_MS < 0 || REPEATED_NOTE_GAP_MS > 100) {
-            throw ConfigException("REPEATED_NOTE_GAP_MS must be between 0 and 100");
+        if (REPEATED_NOTE_GAP_MS < 0 || REPEATED_NOTE_GAP_MS > 1000) {
+            throw ConfigException("REPEATED_NOTE_GAP_MS must be between 0 and 1000");
         }
 
         for (const auto& curve : customVelocityCurves) {
@@ -184,26 +196,52 @@ namespace midi {
         j = json{
             {"ENABLED", h.ENABLED},
             {"CHORD_DETECTION_WINDOW_MS", h.CHORD_DETECTION_WINDOW_MS},
+            {"CHORD_PRESS_MIN_SPREAD_MS", h.CHORD_PRESS_MIN_SPREAD_MS},
             {"CHORD_PRESS_MAX_SPREAD_MS", h.CHORD_PRESS_MAX_SPREAD_MS},
+            {"CHORD_RELEASE_MIN_SPREAD_MS", h.CHORD_RELEASE_MIN_SPREAD_MS},
             {"CHORD_RELEASE_MAX_SPREAD_MS", h.CHORD_RELEASE_MAX_SPREAD_MS},
             {"SIMULTANEOUS_FINGER_CHANCE_PERCENT", h.SIMULTANEOUS_FINGER_CHANCE_PERCENT},
             {"SEQUENTIAL_ARTICULATION", h.SEQUENTIAL_ARTICULATION},
+            {"SEQUENTIAL_TRIGGER_WINDOW_MS", h.SEQUENTIAL_TRIGGER_WINDOW_MS},
+            {"SEQUENTIAL_MIN_GAP_MS", h.SEQUENTIAL_MIN_GAP_MS},
             {"SEQUENTIAL_MAX_GAP_MS", h.SEQUENTIAL_MAX_GAP_MS},
             {"RANDOMIZE_EACH_PLAY", h.RANDOMIZE_EACH_PLAY}
         };
     }
 
     void from_json(const json& j, HumanizerSettings& h) {
-        // Every field is optional so an older/partial config can safely pick up
-        // tuned defaults as the humanizer evolves.
+        // Every field is optional so older/partial configs remain usable.
         if (j.contains("ENABLED")) j.at("ENABLED").get_to(h.ENABLED);
         if (j.contains("CHORD_DETECTION_WINDOW_MS")) j.at("CHORD_DETECTION_WINDOW_MS").get_to(h.CHORD_DETECTION_WINDOW_MS);
+        if (j.contains("CHORD_PRESS_MIN_SPREAD_MS")) j.at("CHORD_PRESS_MIN_SPREAD_MS").get_to(h.CHORD_PRESS_MIN_SPREAD_MS);
         if (j.contains("CHORD_PRESS_MAX_SPREAD_MS")) j.at("CHORD_PRESS_MAX_SPREAD_MS").get_to(h.CHORD_PRESS_MAX_SPREAD_MS);
+        if (j.contains("CHORD_RELEASE_MIN_SPREAD_MS")) j.at("CHORD_RELEASE_MIN_SPREAD_MS").get_to(h.CHORD_RELEASE_MIN_SPREAD_MS);
         if (j.contains("CHORD_RELEASE_MAX_SPREAD_MS")) j.at("CHORD_RELEASE_MAX_SPREAD_MS").get_to(h.CHORD_RELEASE_MAX_SPREAD_MS);
         if (j.contains("SIMULTANEOUS_FINGER_CHANCE_PERCENT")) j.at("SIMULTANEOUS_FINGER_CHANCE_PERCENT").get_to(h.SIMULTANEOUS_FINGER_CHANCE_PERCENT);
         if (j.contains("SEQUENTIAL_ARTICULATION")) j.at("SEQUENTIAL_ARTICULATION").get_to(h.SEQUENTIAL_ARTICULATION);
+        if (j.contains("SEQUENTIAL_TRIGGER_WINDOW_MS")) j.at("SEQUENTIAL_TRIGGER_WINDOW_MS").get_to(h.SEQUENTIAL_TRIGGER_WINDOW_MS);
+        if (j.contains("SEQUENTIAL_MIN_GAP_MS")) j.at("SEQUENTIAL_MIN_GAP_MS").get_to(h.SEQUENTIAL_MIN_GAP_MS);
         if (j.contains("SEQUENTIAL_MAX_GAP_MS")) j.at("SEQUENTIAL_MAX_GAP_MS").get_to(h.SEQUENTIAL_MAX_GAP_MS);
         if (j.contains("RANDOMIZE_EACH_PLAY")) j.at("RANDOMIZE_EACH_PLAY").get_to(h.RANDOMIZE_EACH_PLAY);
+
+        auto clampMs = [](int& value) { value = std::clamp(value, 0, 1000); };
+        clampMs(h.CHORD_DETECTION_WINDOW_MS);
+        clampMs(h.CHORD_PRESS_MIN_SPREAD_MS);
+        clampMs(h.CHORD_PRESS_MAX_SPREAD_MS);
+        clampMs(h.CHORD_RELEASE_MIN_SPREAD_MS);
+        clampMs(h.CHORD_RELEASE_MAX_SPREAD_MS);
+        clampMs(h.SEQUENTIAL_TRIGGER_WINDOW_MS);
+        clampMs(h.SEQUENTIAL_MIN_GAP_MS);
+        clampMs(h.SEQUENTIAL_MAX_GAP_MS);
+        h.SIMULTANEOUS_FINGER_CHANCE_PERCENT = std::clamp(h.SIMULTANEOUS_FINGER_CHANCE_PERCENT, 0, 100);
+
+        if (h.CHORD_PRESS_MIN_SPREAD_MS > h.CHORD_PRESS_MAX_SPREAD_MS)
+            std::swap(h.CHORD_PRESS_MIN_SPREAD_MS, h.CHORD_PRESS_MAX_SPREAD_MS);
+        if (h.CHORD_RELEASE_MIN_SPREAD_MS > h.CHORD_RELEASE_MAX_SPREAD_MS)
+            std::swap(h.CHORD_RELEASE_MIN_SPREAD_MS, h.CHORD_RELEASE_MAX_SPREAD_MS);
+        if (h.SEQUENTIAL_MIN_GAP_MS > h.SEQUENTIAL_MAX_GAP_MS)
+            std::swap(h.SEQUENTIAL_MIN_GAP_MS, h.SEQUENTIAL_MAX_GAP_MS);
+
         h.validate();
     }
 
@@ -282,6 +320,7 @@ namespace midi {
         p.noteHandlingMode = Config::stringToNoteHandlingMode(mode);
         if (j.contains("REPEATED_NOTE_GAP_MS")) {
             j.at("REPEATED_NOTE_GAP_MS").get_to(p.REPEATED_NOTE_GAP_MS);
+            p.REPEATED_NOTE_GAP_MS = std::clamp(p.REPEATED_NOTE_GAP_MS, 0, 1000);
         }
         //TODO: validate here probably too
         if (j.contains("CUSTOM_VELOCITY_CURVES")) {
@@ -353,6 +392,7 @@ namespace midi {
         // PlaybackSettings defaults this to 15 ms when the key is absent.
         if (j.contains("REPEATED_NOTE_GAP_MS")) {
             j.at("REPEATED_NOTE_GAP_MS").get_to(c.playback.REPEATED_NOTE_GAP_MS);
+            c.playback.REPEATED_NOTE_GAP_MS = std::clamp(c.playback.REPEATED_NOTE_GAP_MS, 0, 1000);
         }
 
         if (j.contains("CUSTOM_VELOCITY_CURVES")) {
@@ -396,11 +436,15 @@ namespace midi {
         humanizer = {
             true,   // ENABLED
             3,      // CHORD_DETECTION_WINDOW_MS
-            12,     // CHORD_PRESS_MAX_SPREAD_MS
-            8,      // CHORD_RELEASE_MAX_SPREAD_MS
-            28,     // SIMULTANEOUS_FINGER_CHANCE_PERCENT
+            12,     // CHORD_PRESS_MIN_SPREAD_MS
+            36,     // CHORD_PRESS_MAX_SPREAD_MS
+            8,      // CHORD_RELEASE_MIN_SPREAD_MS
+            26,     // CHORD_RELEASE_MAX_SPREAD_MS
+            10,     // SIMULTANEOUS_FINGER_CHANCE_PERCENT
             true,   // SEQUENTIAL_ARTICULATION
-            10,     // SEQUENTIAL_MAX_GAP_MS
+            200,    // SEQUENTIAL_TRIGGER_WINDOW_MS
+            8,      // SEQUENTIAL_MIN_GAP_MS
+            20,     // SEQUENTIAL_MAX_GAP_MS
             false   // RANDOMIZE_EACH_PLAY
         };
 

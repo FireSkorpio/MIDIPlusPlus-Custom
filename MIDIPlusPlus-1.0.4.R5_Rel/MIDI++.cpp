@@ -159,6 +159,8 @@ static HWND g_lbMidi = nullptr;
 static HWND g_editDetails = nullptr;
 static HWND g_editTracks = nullptr;
 static HWND g_hOpacityIndicatorBox = nullptr;
+static HWND g_hHumanizerWnd = nullptr;
+static HWND g_hHelpWnd = nullptr;
 
 // -----------------------------------------------------------------------------
 // Control IDs
@@ -194,6 +196,8 @@ enum ControlID {
     ID_BTN_SUSTAIN,
     ID_BTN_TRANSPOSE,
     ID_BTN_TRANSPOSEOUT,
+    ID_BTN_HUMANIZER,
+    ID_BTN_HELP,
     ID_CB_VELOCITY_CURVE,
     ID_SLIDER_SUSTAIN_CUTOFF,
     ID_STATIC_SUSTAIN_LABEL,
@@ -884,6 +888,346 @@ static LRESULT CALLBACK MidiListSubclassProc(HWND hwnd, UINT msg, WPARAM wParam,
         return DefSubclassProc(hwnd, msg, wParam, lParam);
     }
 }
+
+// -----------------------------------------------------------------------------
+// Humanizer / Help popups
+// -----------------------------------------------------------------------------
+enum HumanizerPopupID {
+    ID_HUM_ENABLED = 4101,
+    ID_HUM_CHORD_WINDOW,
+    ID_HUM_PRESS_MIN,
+    ID_HUM_PRESS_MAX,
+    ID_HUM_RELEASE_MIN,
+    ID_HUM_RELEASE_MAX,
+    ID_HUM_SIMULTANEOUS,
+    ID_HUM_SEQ_ENABLED,
+    ID_HUM_SEQ_TRIGGER,
+    ID_HUM_SEQ_MIN,
+    ID_HUM_SEQ_MAX,
+    ID_HUM_REPEATED_GAP,
+    ID_HUM_RANDOMIZE,
+    ID_HUM_APPLY,
+    ID_HUM_DEFAULTS,
+    ID_HUM_CLOSE
+};
+
+static void SetDefaultGuiFont(HWND control) {
+    if (control)
+        SendMessage(control, WM_SETFONT, reinterpret_cast<WPARAM>(GetStockObject(DEFAULT_GUI_FONT)), TRUE);
+}
+
+static HWND CreatePopupLabel(HWND parent, const wchar_t* text, int x, int y, int w = 260) {
+    HWND h = CreateWindowW(L"static", text, WS_CHILD | WS_VISIBLE,
+        x, y, w, 20, parent, nullptr, g_hInst, nullptr);
+    SetDefaultGuiFont(h);
+    return h;
+}
+
+static HWND CreatePopupEdit(HWND parent, int id, int value, int x, int y, int w = 90) {
+    wchar_t buffer[32];
+    swprintf_s(buffer, L"%d", value);
+    HWND h = CreateWindowExW(WS_EX_CLIENTEDGE, L"edit", buffer,
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_NUMBER | ES_RIGHT,
+        x, y, w, 22, parent, reinterpret_cast<HMENU>(id), g_hInst, nullptr);
+    SetDefaultGuiFont(h);
+    return h;
+}
+
+static HWND CreatePopupCheck(HWND parent, int id, const wchar_t* text, bool checked, int x, int y, int w = 250) {
+    HWND h = CreateWindowW(L"button", text,
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX,
+        x, y, w, 22, parent, reinterpret_cast<HMENU>(id), g_hInst, nullptr);
+    SendMessage(h, BM_SETCHECK, checked ? BST_CHECKED : BST_UNCHECKED, 0);
+    SetDefaultGuiFont(h);
+    return h;
+}
+
+static int ReadPopupInt(HWND hwnd, int id, int fallback, int maxValue) {
+    wchar_t buffer[64]{};
+    GetWindowTextW(GetDlgItem(hwnd, id), buffer, 64);
+    wchar_t* end = nullptr;
+    long value = wcstol(buffer, &end, 10);
+    if (end == buffer)
+        value = fallback;
+    value = std::clamp<long>(value, 0, maxValue);
+    return static_cast<int>(value);
+}
+
+static void CenterPopup(HWND popup, HWND owner) {
+    RECT pr{}, orc{};
+    GetWindowRect(popup, &pr);
+    if (owner && GetWindowRect(owner, &orc)) {
+        const int x = orc.left + ((orc.right - orc.left) - (pr.right - pr.left)) / 2;
+        const int y = orc.top + ((orc.bottom - orc.top) - (pr.bottom - pr.top)) / 2;
+        SetWindowPos(popup, nullptr, std::max(0, x), std::max(0, y), 0, 0,
+            SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+    }
+}
+
+static void PopulateHumanizerPopup(HWND hwnd) {
+    const auto& cfg = midi::Config::getInstance();
+    const auto& h = cfg.humanizer;
+    SendMessage(GetDlgItem(hwnd, ID_HUM_ENABLED), BM_SETCHECK, h.ENABLED ? BST_CHECKED : BST_UNCHECKED, 0);
+    SendMessage(GetDlgItem(hwnd, ID_HUM_SEQ_ENABLED), BM_SETCHECK, h.SEQUENTIAL_ARTICULATION ? BST_CHECKED : BST_UNCHECKED, 0);
+    SendMessage(GetDlgItem(hwnd, ID_HUM_RANDOMIZE), BM_SETCHECK, h.RANDOMIZE_EACH_PLAY ? BST_CHECKED : BST_UNCHECKED, 0);
+
+    const struct { int id; int value; } values[] = {
+        {ID_HUM_CHORD_WINDOW, h.CHORD_DETECTION_WINDOW_MS},
+        {ID_HUM_PRESS_MIN, h.CHORD_PRESS_MIN_SPREAD_MS},
+        {ID_HUM_PRESS_MAX, h.CHORD_PRESS_MAX_SPREAD_MS},
+        {ID_HUM_RELEASE_MIN, h.CHORD_RELEASE_MIN_SPREAD_MS},
+        {ID_HUM_RELEASE_MAX, h.CHORD_RELEASE_MAX_SPREAD_MS},
+        {ID_HUM_SIMULTANEOUS, h.SIMULTANEOUS_FINGER_CHANCE_PERCENT},
+        {ID_HUM_SEQ_TRIGGER, h.SEQUENTIAL_TRIGGER_WINDOW_MS},
+        {ID_HUM_SEQ_MIN, h.SEQUENTIAL_MIN_GAP_MS},
+        {ID_HUM_SEQ_MAX, h.SEQUENTIAL_MAX_GAP_MS},
+        {ID_HUM_REPEATED_GAP, cfg.playback.REPEATED_NOTE_GAP_MS}
+    };
+    for (const auto& item : values) {
+        wchar_t buffer[32];
+        swprintf_s(buffer, L"%d", item.value);
+        SetWindowTextW(GetDlgItem(hwnd, item.id), buffer);
+    }
+}
+
+static bool ApplyHumanizerPopup(HWND hwnd) {
+    auto& cfg = midi::Config::getInstance();
+    auto& h = cfg.humanizer;
+
+    h.ENABLED = SendMessage(GetDlgItem(hwnd, ID_HUM_ENABLED), BM_GETCHECK, 0, 0) == BST_CHECKED;
+    h.SEQUENTIAL_ARTICULATION = SendMessage(GetDlgItem(hwnd, ID_HUM_SEQ_ENABLED), BM_GETCHECK, 0, 0) == BST_CHECKED;
+    h.RANDOMIZE_EACH_PLAY = SendMessage(GetDlgItem(hwnd, ID_HUM_RANDOMIZE), BM_GETCHECK, 0, 0) == BST_CHECKED;
+
+    h.CHORD_DETECTION_WINDOW_MS = ReadPopupInt(hwnd, ID_HUM_CHORD_WINDOW, h.CHORD_DETECTION_WINDOW_MS, 1000);
+    h.CHORD_PRESS_MIN_SPREAD_MS = ReadPopupInt(hwnd, ID_HUM_PRESS_MIN, h.CHORD_PRESS_MIN_SPREAD_MS, 1000);
+    h.CHORD_PRESS_MAX_SPREAD_MS = ReadPopupInt(hwnd, ID_HUM_PRESS_MAX, h.CHORD_PRESS_MAX_SPREAD_MS, 1000);
+    h.CHORD_RELEASE_MIN_SPREAD_MS = ReadPopupInt(hwnd, ID_HUM_RELEASE_MIN, h.CHORD_RELEASE_MIN_SPREAD_MS, 1000);
+    h.CHORD_RELEASE_MAX_SPREAD_MS = ReadPopupInt(hwnd, ID_HUM_RELEASE_MAX, h.CHORD_RELEASE_MAX_SPREAD_MS, 1000);
+    h.SIMULTANEOUS_FINGER_CHANCE_PERCENT = ReadPopupInt(hwnd, ID_HUM_SIMULTANEOUS, h.SIMULTANEOUS_FINGER_CHANCE_PERCENT, 100);
+    h.SEQUENTIAL_TRIGGER_WINDOW_MS = ReadPopupInt(hwnd, ID_HUM_SEQ_TRIGGER, h.SEQUENTIAL_TRIGGER_WINDOW_MS, 1000);
+    h.SEQUENTIAL_MIN_GAP_MS = ReadPopupInt(hwnd, ID_HUM_SEQ_MIN, h.SEQUENTIAL_MIN_GAP_MS, 1000);
+    h.SEQUENTIAL_MAX_GAP_MS = ReadPopupInt(hwnd, ID_HUM_SEQ_MAX, h.SEQUENTIAL_MAX_GAP_MS, 1000);
+    cfg.playback.REPEATED_NOTE_GAP_MS = ReadPopupInt(hwnd, ID_HUM_REPEATED_GAP, cfg.playback.REPEATED_NOTE_GAP_MS, 1000);
+
+    if (h.CHORD_PRESS_MIN_SPREAD_MS > h.CHORD_PRESS_MAX_SPREAD_MS)
+        std::swap(h.CHORD_PRESS_MIN_SPREAD_MS, h.CHORD_PRESS_MAX_SPREAD_MS);
+    if (h.CHORD_RELEASE_MIN_SPREAD_MS > h.CHORD_RELEASE_MAX_SPREAD_MS)
+        std::swap(h.CHORD_RELEASE_MIN_SPREAD_MS, h.CHORD_RELEASE_MAX_SPREAD_MS);
+    if (h.SEQUENTIAL_MIN_GAP_MS > h.SEQUENTIAL_MAX_GAP_MS)
+        std::swap(h.SEQUENTIAL_MIN_GAP_MS, h.SEQUENTIAL_MAX_GAP_MS);
+
+    try {
+        cfg.validate();
+        cfg.saveToFile("config.json");
+        PopulateHumanizerPopup(hwnd);
+        std::cout << "[Humanizer] Settings saved. Reload the MIDI to rebuild note timing.\n";
+        MessageBoxW(hwnd,
+            L"Humanizer settings saved.\n\nReload the MIDI file (or load another song) for timing changes to take effect.",
+            L"Humanizer", MB_OK | MB_ICONINFORMATION);
+        return true;
+    }
+    catch (const std::exception& ex) {
+        std::wstring message = L"Could not save Humanizer settings:\n";
+        std::string what = ex.what();
+        message.append(what.begin(), what.end());
+        MessageBoxW(hwnd, message.c_str(), L"Humanizer Error", MB_OK | MB_ICONERROR);
+        return false;
+    }
+}
+
+static LRESULT CALLBACK HumanizerWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    switch (msg) {
+    case WM_CREATE:
+    {
+        const auto& cfg = midi::Config::getInstance();
+        const auto& h = cfg.humanizer;
+        CreatePopupCheck(hwnd, ID_HUM_ENABLED, L"Enable Humanizer", h.ENABLED, 18, 15, 180);
+        CreatePopupCheck(hwnd, ID_HUM_SEQ_ENABLED, L"Sequential articulation", h.SEQUENTIAL_ARTICULATION, 210, 15, 180);
+        CreatePopupCheck(hwnd, ID_HUM_RANDOMIZE, L"Different timing each play", h.RANDOMIZE_EACH_PLAY, 395, 15, 180);
+
+        const int labelX = 18, editX = 335;
+        int y = 52;
+        const int row = 30;
+        CreatePopupLabel(hwnd, L"Chord detection window (ms)", labelX, y); CreatePopupEdit(hwnd, ID_HUM_CHORD_WINDOW, h.CHORD_DETECTION_WINDOW_MS, editX, y - 2); y += row;
+        CreatePopupLabel(hwnd, L"Chord press minimum spread (ms)", labelX, y); CreatePopupEdit(hwnd, ID_HUM_PRESS_MIN, h.CHORD_PRESS_MIN_SPREAD_MS, editX, y - 2); y += row;
+        CreatePopupLabel(hwnd, L"Chord press maximum spread (ms)", labelX, y); CreatePopupEdit(hwnd, ID_HUM_PRESS_MAX, h.CHORD_PRESS_MAX_SPREAD_MS, editX, y - 2); y += row;
+        CreatePopupLabel(hwnd, L"Chord release minimum spread (ms)", labelX, y); CreatePopupEdit(hwnd, ID_HUM_RELEASE_MIN, h.CHORD_RELEASE_MIN_SPREAD_MS, editX, y - 2); y += row;
+        CreatePopupLabel(hwnd, L"Chord release maximum spread (ms)", labelX, y); CreatePopupEdit(hwnd, ID_HUM_RELEASE_MAX, h.CHORD_RELEASE_MAX_SPREAD_MS, editX, y - 2); y += row;
+        CreatePopupLabel(hwnd, L"Simultaneous finger chance (%)", labelX, y); CreatePopupEdit(hwnd, ID_HUM_SIMULTANEOUS, h.SIMULTANEOUS_FINGER_CHANCE_PERCENT, editX, y - 2); y += row;
+        CreatePopupLabel(hwnd, L"Sequential trigger window (ms)", labelX, y); CreatePopupEdit(hwnd, ID_HUM_SEQ_TRIGGER, h.SEQUENTIAL_TRIGGER_WINDOW_MS, editX, y - 2); y += row;
+        CreatePopupLabel(hwnd, L"Sequential minimum gap (ms)", labelX, y); CreatePopupEdit(hwnd, ID_HUM_SEQ_MIN, h.SEQUENTIAL_MIN_GAP_MS, editX, y - 2); y += row;
+        CreatePopupLabel(hwnd, L"Sequential maximum gap (ms)", labelX, y); CreatePopupEdit(hwnd, ID_HUM_SEQ_MAX, h.SEQUENTIAL_MAX_GAP_MS, editX, y - 2); y += row;
+        CreatePopupLabel(hwnd, L"Repeated same-note gap (ms)", labelX, y); CreatePopupEdit(hwnd, ID_HUM_REPEATED_GAP, cfg.playback.REPEATED_NOTE_GAP_MS, editX, y - 2); y += row;
+
+        HWND hint = CreateWindowW(L"static",
+            L"Timing values accept 0-1000 ms. Higher values are more obvious; 1000 ms = 1 second.",
+            WS_CHILD | WS_VISIBLE, 18, y + 2, 525, 20, hwnd, nullptr, g_hInst, nullptr);
+        SetDefaultGuiFont(hint);
+
+        HWND apply = CreateWindowW(L"button", L"Apply && Save", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON,
+            205, y + 35, 105, 28, hwnd, reinterpret_cast<HMENU>(ID_HUM_APPLY), g_hInst, nullptr);
+        HWND defaults = CreateWindowW(L"button", L"Defaults", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+            318, y + 35, 90, 28, hwnd, reinterpret_cast<HMENU>(ID_HUM_DEFAULTS), g_hInst, nullptr);
+        HWND close = CreateWindowW(L"button", L"Close", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+            416, y + 35, 90, 28, hwnd, reinterpret_cast<HMENU>(ID_HUM_CLOSE), g_hInst, nullptr);
+        SetDefaultGuiFont(apply); SetDefaultGuiFont(defaults); SetDefaultGuiFont(close);
+        return 0;
+    }
+    case WM_COMMAND:
+        switch (LOWORD(wParam)) {
+        case ID_HUM_APPLY:
+            if (HIWORD(wParam) == BN_CLICKED) ApplyHumanizerPopup(hwnd);
+            return 0;
+        case ID_HUM_DEFAULTS:
+            if (HIWORD(wParam) == BN_CLICKED) {
+                auto& cfg = midi::Config::getInstance();
+                cfg.humanizer = midi::HumanizerSettings{};
+                cfg.playback.REPEATED_NOTE_GAP_MS = 15;
+                PopulateHumanizerPopup(hwnd);
+            }
+            return 0;
+        case ID_HUM_CLOSE:
+            if (HIWORD(wParam) == BN_CLICKED) DestroyWindow(hwnd);
+            return 0;
+        }
+        break;
+    case WM_CLOSE:
+        DestroyWindow(hwnd);
+        return 0;
+    case WM_DESTROY:
+        g_hHumanizerWnd = nullptr;
+        return 0;
+    }
+    return DefWindowProcW(hwnd, msg, wParam, lParam);
+}
+
+static void ShowHumanizerPopup(HWND owner) {
+    if (g_hHumanizerWnd && IsWindow(g_hHumanizerWnd)) {
+        ShowWindow(g_hHumanizerWnd, SW_SHOWNORMAL);
+        SetForegroundWindow(g_hHumanizerWnd);
+        return;
+    }
+
+    static bool registered = false;
+    if (!registered) {
+        WNDCLASSEXW wc{};
+        wc.cbSize = sizeof(wc);
+        wc.lpfnWndProc = HumanizerWndProc;
+        wc.hInstance = g_hInst;
+        wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
+        wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_BTNFACE + 1);
+        wc.lpszClassName = L"MIDIPlusPlusHumanizerPopup";
+        RegisterClassExW(&wc);
+        registered = true;
+    }
+
+    g_hHumanizerWnd = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_DLGMODALFRAME,
+        L"MIDIPlusPlusHumanizerPopup", L"MIDI++ Custom Build - Humanizer",
+        WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU,
+        CW_USEDEFAULT, CW_USEDEFAULT, 585, 455,
+        owner, nullptr, g_hInst, nullptr);
+    if (g_hHumanizerWnd) {
+        CenterPopup(g_hHumanizerWnd, owner);
+        ShowWindow(g_hHumanizerWnd, SW_SHOW);
+        SetForegroundWindow(g_hHumanizerWnd);
+    }
+}
+
+static const wchar_t* kHelpText =
+    L"MIDI++ Custom Build - Quick Help\r\n"
+    L"================================\r\n\r\n"
+    L"GETTING STARTED\r\n"
+    L"1. Put .mid/.midi files in the midi folder beside MIDI++.exe.\r\n"
+    L"2. Select a file or folder on the left and press Load.\r\n"
+    L"3. Press Play/Pause (F1) to start or pause. F2 rewinds, F3 skips, F4 stops.\r\n\r\n"
+    L"PLAYBACK (BASIC)\r\n"
+    L"Load: Parses the selected MIDI.  Restart: returns to the beginning.\r\n"
+    L"Skip+10 / Rew-10: moves through the song. Speed++ / Speed-- changes playback speed.\r\n"
+    L"Midi2Key: maps a physical MIDI keyboard to QWERTY keys. MidiConnect is the alternate MIDI connection mode.\r\n\r\n"
+    L"ADVANCED\r\n"
+    L"88-Key: uses the full configured keyboard range instead of the limited layout.\r\n"
+    L"AutoVol: enables automatic velocity/volume handling. Velocity: enables velocity-aware playback.\r\n"
+    L"Sustain: enables MIDI sustain behavior. Transpose / OutRange: controls transposition and out-of-range handling.\r\n"
+    L"Sustain Cutoff: threshold used for sustain handling. VelCurve: selects how MIDI velocity maps to output volume.\r\n\r\n"
+    L"HUMANIZER\r\n"
+    L"Enable Humanizer: turns human timing simulation on/off.\r\n"
+    L"Chord detection window: how close Note Ons may be and still count as one chord/hand gesture.\r\n"
+    L"Chord press min/max spread: total time across fingers landing on a 2-5 note chord.\r\n"
+    L"Chord release min/max spread: how unevenly chord fingers lift. At least one may stay to the MIDI's original Note Off.\r\n"
+    L"Simultaneous finger chance: chance that neighboring simulated finger actions share the same timestamp.\r\n"
+    L"Sequential articulation: humanizes ordinary note-to-note movement, not only chords.\r\n"
+    L"Sequential trigger window: next same-hand gesture must begin within this distance of the current note's original end.\r\n"
+    L"Sequential min/max gap: desired key-up space before the next same-hand note. The next note is never intentionally delayed.\r\n"
+    L"Repeated same-note gap: hard minimum release gap for repetitions such as A-A-A when timing allows.\r\n"
+    L"Different timing each play: off = repeatable timing; on = a new micro-performance each load/play.\r\n\r\n"
+    L"TIMING\r\n"
+    L"1000 ms = 1 second. Values from 0-1000 ms are accepted. Large values can intentionally create exaggerated/sloppy playing.\r\n"
+    L"The Humanizer never starts a note earlier than the MIDI and never extends a note past its original Note Off.\r\n"
+    L"If a requested timing value is impossible for a very short note, MIDI++ uses as much as physically fits.\r\n\r\n"
+    L"CONFIG SAFETY\r\n"
+    L"If config.json cannot be loaded, MIDI++ no longer overwrites it. It uses defaults for that launch and creates config.invalid.backup.json plus config_error.txt.\r\n";
+
+static LRESULT CALLBACK HelpWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    switch (msg) {
+    case WM_CREATE:
+    {
+        HWND edit = CreateWindowExW(WS_EX_CLIENTEDGE, L"edit", kHelpText,
+            WS_CHILD | WS_VISIBLE | ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL | WS_VSCROLL,
+            10, 10, 650, 430, hwnd, nullptr, g_hInst, nullptr);
+        SetDefaultGuiFont(edit);
+        HWND close = CreateWindowW(L"button", L"Close", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON,
+            570, 450, 90, 28, hwnd, reinterpret_cast<HMENU>(ID_HUM_CLOSE), g_hInst, nullptr);
+        SetDefaultGuiFont(close);
+        return 0;
+    }
+    case WM_COMMAND:
+        if (LOWORD(wParam) == ID_HUM_CLOSE && HIWORD(wParam) == BN_CLICKED) {
+            DestroyWindow(hwnd);
+            return 0;
+        }
+        break;
+    case WM_CLOSE:
+        DestroyWindow(hwnd);
+        return 0;
+    case WM_DESTROY:
+        g_hHelpWnd = nullptr;
+        return 0;
+    }
+    return DefWindowProcW(hwnd, msg, wParam, lParam);
+}
+
+static void ShowHelpPopup(HWND owner) {
+    if (g_hHelpWnd && IsWindow(g_hHelpWnd)) {
+        ShowWindow(g_hHelpWnd, SW_SHOWNORMAL);
+        SetForegroundWindow(g_hHelpWnd);
+        return;
+    }
+
+    static bool registered = false;
+    if (!registered) {
+        WNDCLASSEXW wc{};
+        wc.cbSize = sizeof(wc);
+        wc.lpfnWndProc = HelpWndProc;
+        wc.hInstance = g_hInst;
+        wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
+        wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_BTNFACE + 1);
+        wc.lpszClassName = L"MIDIPlusPlusHelpPopup";
+        RegisterClassExW(&wc);
+        registered = true;
+    }
+
+    g_hHelpWnd = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_DLGMODALFRAME,
+        L"MIDIPlusPlusHelpPopup", L"MIDI++ Custom Build - Help",
+        WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU,
+        CW_USEDEFAULT, CW_USEDEFAULT, 685, 525,
+        owner, nullptr, g_hInst, nullptr);
+    if (g_hHelpWnd) {
+        CenterPopup(g_hHelpWnd, owner);
+        ShowWindow(g_hHelpWnd, SW_SHOW);
+        SetForegroundWindow(g_hHelpWnd);
+    }
+}
+
 static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
         // temporary fix: this shit
@@ -1036,37 +1380,47 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
             WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
             advx, advy, advBw + 15, advBh,
             hWnd, reinterpret_cast<HMENU>(ID_BTN_TRANSPOSEOUT), g_hInst, nullptr);
+        // Humanizer and Help are configuration popups. Keep them in the
+        // Advanced group so timing can be tuned without editing JSON by hand.
+        CreateWindowW(L"button", L"Humanizer",
+            WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
+            Layout::PADV_X + 15, Layout::PADV_Y + 62, 95, 27,
+            hWnd, reinterpret_cast<HMENU>(ID_BTN_HUMANIZER), g_hInst, nullptr);
+        CreateWindowW(L"button", L"Help",
+            WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
+            Layout::PADV_X + 115, Layout::PADV_Y + 62, 60, 27,
+            hWnd, reinterpret_cast<HMENU>(ID_BTN_HELP), g_hInst, nullptr);
+
         {
-            HWND hStaticSustainLbl = CreateWindowW(L"static", L"Sustain Cutoff:",
+            HWND hStaticSustainLbl = CreateWindowW(L"static", L"Sustain:",
                 WS_CHILD | WS_VISIBLE,
-                Layout::PADV_X + 20, Layout::PADV_Y + 67,
-                100, 20,
+                Layout::PADV_X + 185, Layout::PADV_Y + 68,
+                55, 20,
                 hWnd, reinterpret_cast<HMENU>(ID_STATIC_SUSTAIN_LABEL), g_hInst, nullptr);
             HWND hSustainSlider = CreateWindowExW(0, TRACKBAR_CLASSW, L"",
                 WS_CHILD | WS_VISIBLE | TBS_AUTOTICKS,
-                Layout::PADV_X + 115, Layout::PADV_Y + 61,
-                160, 30,
+                Layout::PADV_X + 240, Layout::PADV_Y + 61,
+                105, 30,
                 hWnd, reinterpret_cast<HMENU>(ID_SLIDER_SUSTAIN_CUTOFF), g_hInst, nullptr);
             SendMessage(hSustainSlider, TBM_SETRANGE, TRUE, MAKELPARAM(0, 127));
             SendMessage(hSustainSlider, TBM_SETTICFREQ, 16, 0);
             SendMessage(hSustainSlider, TBM_SETPOS, TRUE, g_sustainCutoff);
             g_hSustainCutoffValueBox = CreateWindowExW(WS_EX_CLIENTEDGE,
-                L"edit",
-                L"64",
+                L"edit", L"64",
                 WS_CHILD | WS_VISIBLE | ES_READONLY | ES_CENTER,
-                Layout::PADV_X + 280, Layout::PADV_Y + 65,
+                Layout::PADV_X + 350, Layout::PADV_Y + 65,
                 35, 20,
                 hWnd, nullptr, g_hInst, nullptr);
         }
+        HWND hStaticVelLbl = CreateWindowW(L"static", L"Vel:",
+            WS_CHILD | WS_VISIBLE,
+            Layout::PADV_X + 395, Layout::PADV_Y + 68, 30, 20,
+            hWnd, reinterpret_cast<HMENU>(ID_STATIC_SUSTAIN_LABEL), g_hInst, nullptr);
         CreateWindowW(L"combobox", nullptr,
             WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST,
-            advx - 53, advy + 38, 150, 200,
+            Layout::PADV_X + 425, Layout::PADV_Y + 62, 155, 200,
             hWnd, reinterpret_cast<HMENU>(ID_CB_VELOCITY_CURVE), g_hInst, nullptr);
         RefreshVelocityCurveCombo(hWnd);
-        HWND hStaticVelLbl = CreateWindowW(L"static", L"VelCurve:",
-            WS_CHILD | WS_VISIBLE,
-            advx - 125, advy + 41, 65, 20,
-            hWnd, reinterpret_cast<HMENU>(ID_STATIC_SUSTAIN_LABEL), g_hInst, nullptr);
 
         // Config Group
         CreateWindowW(L"button", L"Config",
@@ -1277,6 +1631,16 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
                 PopulateMidiList();
                 std::wcout << L"[Refresh] Scanned current MIDI folder: " << g_currentMidiDir.wstring() << L"\n";
             }
+            break;
+
+        case ID_BTN_HUMANIZER:
+            if (code == BN_CLICKED)
+                ShowHumanizerPopup(hWnd);
+            break;
+
+        case ID_BTN_HELP:
+            if (code == BN_CLICKED)
+                ShowHelpPopup(hWnd);
             break;
 
         case ID_CHK_TOP:
@@ -1975,7 +2339,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
     UniqueHandle singleInstanceMutex(CreateMutexW(nullptr, TRUE, L"Global\\MIDI++_On_Top"));
     g_hSingleInstanceMutex = singleInstanceMutex;
     if (GetLastError() == ERROR_ALREADY_EXISTS) {
-        HWND existingWindow = FindWindowW(L"MIDI++", L"MIDI++ v1.0.4.R5");
+        HWND existingWindow = FindWindowW(L"MIDI++", L"MIDI++ Custom Build");
         if (existingWindow) {
             if (IsIconic(existingWindow))
                 ShowWindow(existingWindow, SW_RESTORE);
@@ -1997,7 +2361,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
     RedirectCout();
     auto& cfg = midi::Config::getInstance();
 
-    std::cout << " ===== MIDI++ v1.0.4.R5 | Developed by Zeph, Tested by Gene =====\n";
+    std::cout << " ===== MIDI++ Custom Build | Based on v1.0.4.R5 by Zeph, Tested by Gene =====\n";
     std::cout << "Hotkeys:\n";
     std::cout << "  Play/Pause:     " << getReadableKey(cfg.hotkeys.PLAY_PAUSE_KEY) << "\n";
     std::cout << "  Rewind:         " << getReadableKey(cfg.hotkeys.REWIND_KEY) << "\n";
@@ -2023,7 +2387,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
     RegisterClassExW(&wc);
     g_hMainWnd = CreateWindowExW(WS_EX_NOACTIVATE | WS_EX_APPWINDOW | WS_EX_LAYERED,
         wc.lpszClassName,
-        L"MIDI++ v1.0.4.R5",
+        L"MIDI++ Custom Build",
         WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
         CW_USEDEFAULT, CW_USEDEFAULT,
         Layout::WIN_W, Layout::WIN_H,

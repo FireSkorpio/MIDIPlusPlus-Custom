@@ -7,6 +7,8 @@
 #include <thread>
 #include <condition_variable>
 #include <iostream>
+#include <fstream>
+#include <filesystem>
 
 #pragma comment(lib, "avrt.lib")
 
@@ -367,14 +369,24 @@ VirtualPianoPlayer::VirtualPianoPlayer() noexcept(false)
         midi::Config::getInstance().loadFromFile("config.json");
     }
     catch (const midi::ConfigException& e) {
-        std::cerr << "Configuration error: " << e.what() << "\nLoading default settings...\n";
-        midi::Config::getInstance().setDefaults();
+        // Never destroy the user's config just because one value or JSON field
+        // is invalid. Preserve a backup, report the problem, and use defaults
+        // for this launch only.
+        std::cerr << "Configuration error: " << e.what() << "\nUsing defaults for this launch only.\n";
         try {
-            midi::Config::getInstance().saveToFile("config.json");
+            if (std::filesystem::exists("config.json")) {
+                std::filesystem::copy_file(
+                    "config.json", "config.invalid.backup.json",
+                    std::filesystem::copy_options::overwrite_existing);
+            }
+            std::ofstream errorFile("config_error.txt", std::ios::trunc);
+            if (errorFile)
+                errorFile << "MIDI++ Custom Build config load error:\n" << e.what() << "\n";
         }
-        catch (const midi::ConfigException& e2) {
-            std::cerr << "Failed to save default config: " << e2.what() << "\n";
+        catch (const std::exception& backupError) {
+            std::cerr << "Could not preserve config error details: " << backupError.what() << "\n";
         }
+        midi::Config::getInstance().setDefaults();
     }
     if (IsWin7OrWin8_Real()) {
         MessageBoxA(nullptr,
@@ -816,35 +828,71 @@ void VirtualPianoPlayer::apply_humanizer() {
             });
 
             double countScale = 1.0;
-            if (count == 2) countScale = 0.35;
-            else if (count == 3) countScale = 0.60;
-            else if (count == 4) countScale = 0.82;
+            if (count == 2) countScale = 0.45;
+            else if (count == 3) countScale = 0.65;
+            else if (count == 4) countScale = 0.85;
 
+            double minPressSpreadMs = static_cast<double>(settings.CHORD_PRESS_MIN_SPREAD_MS);
             double maxPressSpreadMs = settings.CHORD_PRESS_MAX_SPREAD_MS * countScale;
+            if (minPressSpreadMs > maxPressSpreadMs)
+                std::swap(minPressSpreadMs, maxPressSpreadMs);
+
+            // Keep the gesture before the next same-hand gesture when one is
+            // known, but otherwise honor the user's configured range. The 90%
+            // cap still permits deliberately sloppy timing at high settings.
             if (groupIndex + 1 < groups.size()) {
                 const double ioiMs = std::chrono::duration<double, std::milli>(
                     groups[groupIndex + 1].originalStart - group.originalStart).count();
-                if (ioiMs > 0.0)
-                    maxPressSpreadMs = std::min(maxPressSpreadMs, ioiMs * 0.20);
-            }
-            maxPressSpreadMs = std::max(0.0, maxPressSpreadMs);
-
-            double cumulativeMs = 0.0;
-            const double nominalStep = count > 1 ? maxPressSpreadMs / static_cast<double>(count - 1) : 0.0;
-            bool introducedPressStagger = false;
-            for (size_t hit = 0; hit < fingered.size(); ++hit) {
-                if (hit > 0) {
-                    const double togetherRoll = unitRandom(seed ^ (0xA100ULL + hit * 31ULL));
-                    const bool together = togetherRoll < (settings.SIMULTANEOUS_FINGER_CHANCE_PERCENT / 100.0);
-                    if (!together) {
-                        const double shape = 0.55 + 0.75 * unitRandom(seed ^ (0xA200ULL + hit * 47ULL));
-                        cumulativeMs += nominalStep * shape;
-                        cumulativeMs = std::min(cumulativeMs, maxPressSpreadMs);
-                    }
+                if (ioiMs > 0.0) {
+                    const double speedCapMs = std::max(0.0, ioiMs * 0.90);
+                    maxPressSpreadMs = std::min(maxPressSpreadMs, speedCapMs);
+                    minPressSpreadMs = std::min(minPressSpreadMs, maxPressSpreadMs);
                 }
+            }
+
+            double shortestNoteMs = 1e12;
+            for (size_t idx : group.members) {
+                const double durationMs = std::chrono::duration<double, std::milli>(
+                    notes[idx].originalRelease - notes[idx].originalPress).count();
+                shortestNoteMs = std::min(shortestNoteMs, durationMs);
+            }
+            const double noteLengthCapMs = std::max(0.0, shortestNoteMs - 1.0);
+            maxPressSpreadMs = std::min(maxPressSpreadMs, noteLengthCapMs);
+            minPressSpreadMs = std::min(minPressSpreadMs, maxPressSpreadMs);
+
+            const double targetPressSpreadMs = minPressSpreadMs +
+                (maxPressSpreadMs - minPressSpreadMs) * unitRandom(seed ^ 0xA050ULL);
+
+            // Build per-finger step weights, then normalize them so the final
+            // non-simultaneous finger lands at the chosen target spread. This
+            // guarantees a visible minimum when the MIDI leaves enough room.
+            std::vector<double> stepWeights(count > 1 ? count - 1 : 0, 0.0);
+            double totalWeight = 0.0;
+            for (size_t hit = 1; hit < fingered.size(); ++hit) {
+                const double togetherRoll = unitRandom(seed ^ (0xA100ULL + hit * 31ULL));
+                const bool together = togetherRoll < (settings.SIMULTANEOUS_FINGER_CHANCE_PERCENT / 100.0);
+                if (!together) {
+                    const double weight = 0.70 + 0.60 * unitRandom(seed ^ (0xA200ULL + hit * 47ULL));
+                    stepWeights[hit - 1] = weight;
+                    totalWeight += weight;
+                }
+            }
+            if (totalWeight <= 0.0 && count > 1 && targetPressSpreadMs > 0.0) {
+                stepWeights.back() = 1.0;
+                totalWeight = 1.0;
+            }
+
+            double cumulativeWeight = 0.0;
+            for (size_t hit = 0; hit < fingered.size(); ++hit) {
+                if (hit > 0)
+                    cumulativeWeight += stepWeights[hit - 1];
+
+                const double offsetMs = (totalWeight > 0.0)
+                    ? targetPressSpreadMs * (cumulativeWeight / totalWeight)
+                    : 0.0;
 
                 LogicalNote& n = notes[fingered[hit].noteIndex];
-                const ns candidate = group.originalStart + millisToNs(cumulativeMs);
+                const ns candidate = group.originalStart + millisToNs(offsetMs);
                 ns newPress = std::max(n.originalPress, candidate);
                 const ns latestSafePress = n.originalRelease - minimumNoteLength;
                 if (latestSafePress >= n.originalPress)
@@ -852,63 +900,49 @@ void VirtualPianoPlayer::apply_humanizer() {
                 else
                     newPress = n.originalPress;
                 n.press->time = newPress;
-                introducedPressStagger |= (newPress > n.originalPress);
             }
 
-            // A 3-5 finger chord should not accidentally remain perfectly
-            // simultaneous just because every random "together" roll hit.
-            // Two-note dyads are allowed to land together naturally.
-            if (!introducedPressStagger && count >= 3 && maxPressSpreadMs >= 1.0) {
-                LogicalNote& n = notes[fingered.back().noteIndex];
-                const ns forcedDelay = millisToNs(std::min(2.0, maxPressSpreadMs));
-                const ns latestSafePress = n.originalRelease - minimumNoteLength;
-                if (latestSafePress > n.originalPress)
-                    n.press->time = std::min(n.originalPress + forcedDelay, latestSafePress);
-            }
+            // Release variation is independent of strike order. One finger
+            // remains at the original MIDI Note Off, at least one other finger
+            // aims for the selected early-release spread, and the rest vary in
+            // between. No note is ever extended beyond its original release.
+            double minReleaseSpreadMs = static_cast<double>(settings.CHORD_RELEASE_MIN_SPREAD_MS);
+            double maxReleaseSpreadMs = settings.CHORD_RELEASE_MAX_SPREAD_MS * countScale;
+            if (minReleaseSpreadMs > maxReleaseSpreadMs)
+                std::swap(minReleaseSpreadMs, maxReleaseSpreadMs);
 
-            // Release variation is independent from strike order.  At least one
-            // finger stays until its original Note Off; others may lift a few
-            // milliseconds early, and some share the same lift time.
-            const double maxReleaseSpreadMs = settings.CHORD_RELEASE_MAX_SPREAD_MS * countScale;
+            double targetReleaseSpreadMs = minReleaseSpreadMs +
+                (maxReleaseSpreadMs - minReleaseSpreadMs) * unitRandom(seed ^ 0xB050ULL);
+
             const size_t releaseAnchor = static_cast<size_t>(
                 unitRandom(seed ^ 0xB001ULL) * static_cast<double>(count)) % count;
-            double previousEarlyMs = 0.0;
-            bool introducedEarlyRelease = false;
+            size_t maxEarlyIndex = (releaseAnchor + 1 + static_cast<size_t>(
+                unitRandom(seed ^ 0xB002ULL) * static_cast<double>(count - 1))) % count;
+            if (maxEarlyIndex == releaseAnchor)
+                maxEarlyIndex = (releaseAnchor + 1) % count;
 
+            double previousEarlyMs = 0.0;
             for (size_t i = 0; i < count; ++i) {
                 LogicalNote& n = notes[group.members[i]];
                 double earlyMs = 0.0;
-                if (i != releaseAnchor && maxReleaseSpreadMs > 0.0) {
+
+                if (i == maxEarlyIndex) {
+                    earlyMs = targetReleaseSpreadMs;
+                }
+                else if (i != releaseAnchor && targetReleaseSpreadMs > 0.0) {
                     const double r = unitRandom(seed ^ (0xB100ULL + i * 59ULL));
                     const double sameChance = settings.SIMULTANEOUS_FINGER_CHANCE_PERCENT / 100.0;
                     if (i > 0 && r < sameChance * 0.55) {
-                        earlyMs = previousEarlyMs; // two fingers lift together
+                        earlyMs = previousEarlyMs;
                     }
-                    else if (r >= sameChance) {
-                        earlyMs = maxReleaseSpreadMs *
-                            (0.20 + 0.80 * unitRandom(seed ^ (0xB200ULL + i * 71ULL)));
+                    else {
+                        earlyMs = targetReleaseSpreadMs *
+                            (0.15 + 0.75 * unitRandom(seed ^ (0xB200ULL + i * 71ULL)));
                     }
                 }
                 previousEarlyMs = earlyMs;
 
                 ns candidate = n.originalRelease - millisToNs(earlyMs);
-                const ns earliestSafeRelease = n.press->time + minimumNoteLength;
-                if (candidate < earliestSafeRelease)
-                    candidate = earliestSafeRelease;
-                if (candidate < n.release->time) {
-                    n.release->time = candidate;
-                    introducedEarlyRelease = true;
-                }
-            }
-
-            // Every humanized chord gets at least a tiny release difference
-            // when its note lengths leave room for one.  One anchor still
-            // remains at the MIDI's original release time.
-            if (!introducedEarlyRelease && count >= 2 && maxReleaseSpreadMs >= 1.0) {
-                size_t candidateIndex = (releaseAnchor + 1) % count;
-                LogicalNote& n = notes[group.members[candidateIndex]];
-                const double forcedEarlyMs = std::min(maxReleaseSpreadMs, std::max(1.0, maxReleaseSpreadMs * 0.45));
-                ns candidate = n.originalRelease - millisToNs(forcedEarlyMs);
                 const ns earliestSafeRelease = n.press->time + minimumNoteLength;
                 if (candidate < earliestSafeRelease)
                     candidate = earliestSafeRelease;
@@ -921,7 +955,10 @@ void VirtualPianoPlayer::apply_humanizer() {
     humanizeHandGroups(leftGroups, Hand::Left);
     humanizeHandGroups(rightGroups, Hand::Right);
 
-    if (settings.SEQUENTIAL_ARTICULATION && settings.SEQUENTIAL_MAX_GAP_MS > 0) {
+    if (settings.SEQUENTIAL_ARTICULATION &&
+        settings.SEQUENTIAL_MAX_GAP_MS > 0 &&
+        settings.SEQUENTIAL_TRIGGER_WINDOW_MS > 0) {
+
         auto articulateGroups = [&](std::vector<HandGroup>& groups, Hand hand) {
             for (size_t g = 0; g + 1 < groups.size(); ++g) {
                 auto& current = groups[g];
@@ -933,21 +970,17 @@ void VirtualPianoPlayer::apply_humanizer() {
                 for (size_t idx : next.members)
                     nextPress = std::min(nextPress, notes[idx].press->time);
 
-                const double ioiMs = std::chrono::duration<double, std::milli>(
-                    next.originalStart - current.originalStart).count();
-                if (ioiMs <= 0.0)
-                    continue;
-
-                // Fast passages get a smaller gap so articulation never turns a
-                // run into staccato or changes the perceived tempo.
-                double speedCapMs = static_cast<double>(settings.SEQUENTIAL_MAX_GAP_MS);
-                if (ioiMs < 40.0)       speedCapMs = std::min(speedCapMs, 2.0);
-                else if (ioiMs < 70.0)  speedCapMs = std::min(speedCapMs, 3.5);
-                else if (ioiMs < 110.0) speedCapMs = std::min(speedCapMs, 5.5);
-                else if (ioiMs < 170.0) speedCapMs = std::min(speedCapMs, 7.5);
-
                 for (size_t idx : current.members) {
                     LogicalNote& n = notes[idx];
+
+                    // Apply articulation to ordinary notes too, not only chord
+                    // members. We only touch a note when the next same-hand
+                    // gesture begins close to its original Note Off.
+                    const double releaseToNextMs = std::chrono::duration<double, std::milli>(
+                        next.originalStart - n.originalRelease).count();
+                    const double triggerMs = static_cast<double>(settings.SEQUENTIAL_TRIGGER_WINDOW_MS);
+                    if (releaseToNextMs < -triggerMs || releaseToNextMs > triggerMs)
+                        continue;
 
                     int nearestDistance = 127;
                     bool samePitchNext = false;
@@ -957,43 +990,47 @@ void VirtualPianoPlayer::apply_humanizer() {
                         samePitchNext |= (distance == 0);
                     }
 
-                    // Same-pitch repetitions are handled by the dedicated 15 ms
-                    // repeated-note correction after the humanizer.
+                    // Repeated notes keep the dedicated hard gap pass afterward.
                     if (samePitchNext)
                         continue;
-
-                    double intervalCapMs = speedCapMs;
-                    if (nearestDistance <= 2)      intervalCapMs = std::min(intervalCapMs, 3.0);
-                    else if (nearestDistance <= 5) intervalCapMs = std::min(intervalCapMs, 5.5);
-                    else if (nearestDistance <= 8) intervalCapMs = std::min(intervalCapMs, 7.0);
-                    else if (nearestDistance <= 12) intervalCapMs = std::min(intervalCapMs, 9.0);
 
                     uint64_t seed = static_cast<uint64_t>(current.originalStart.count());
                     seed ^= static_cast<uint64_t>((n.pitch + 3) * 193 + (nearestDistance + 1) * 389);
                     seed ^= static_cast<uint64_t>(hand == Hand::Left ? 0x4c534551ULL : 0x52534551ULL);
 
-                    // Small stepwise motion is sometimes truly legato.  Larger
-                    // jumps almost always get a little air before the next key.
-                    const double zeroChance = nearestDistance <= 2 ? 0.16 : (nearestDistance <= 5 ? 0.07 : 0.03);
-                    if (unitRandom(seed ^ 0xC001ULL) < zeroChance)
+                    double minGapMs = static_cast<double>(settings.SEQUENTIAL_MIN_GAP_MS);
+                    double maxGapMs = static_cast<double>(settings.SEQUENTIAL_MAX_GAP_MS);
+                    if (minGapMs > maxGapMs)
+                        std::swap(minGapMs, maxGapMs);
+
+                    // Larger jumps normally need a little more physical air.
+                    double intervalScale = 0.70;
+                    if (nearestDistance <= 2) intervalScale = 0.65;
+                    else if (nearestDistance <= 5) intervalScale = 0.80;
+                    else if (nearestDistance <= 8) intervalScale = 0.92;
+                    else if (nearestDistance <= 12) intervalScale = 1.00;
+                    else intervalScale = 1.08;
+
+                    // Keep the configured minimum as the user's floor when
+                    // timing permits; pitch distance mainly changes the upper
+                    // end of the range.
+                    maxGapMs *= intervalScale;
+                    maxGapMs = std::min(maxGapMs, 1000.0);
+                    maxGapMs = std::max(maxGapMs, minGapMs);
+
+                    const double desiredGapMs = minGapMs +
+                        (maxGapMs - minGapMs) * unitRandom(seed ^ 0xC101ULL);
+                    if (desiredGapMs <= 0.0)
                         continue;
 
-                    const double gapMs = intervalCapMs *
-                        (0.58 + 0.42 * unitRandom(seed ^ 0xC101ULL));
-                    if (gapMs <= 0.0)
-                        continue;
-
-                    // Do not chop a deliberately sustained independent voice.
-                    // This feature targets notes whose Note Off is near the next
-                    // gesture (the robotic key-to-key transitions the user sees).
-                    if (n.originalRelease > next.originalStart + std::chrono::milliseconds(35))
-                        continue;
-
-                    ns targetRelease = nextPress - millisToNs(gapMs);
+                    ns targetRelease = nextPress - millisToNs(desiredGapMs);
                     const ns earliestSafeRelease = n.press->time + minimumNoteLength;
                     if (targetRelease < earliestSafeRelease)
                         targetRelease = earliestSafeRelease;
 
+                    // If the MIDI already contains a larger natural gap, leave
+                    // it alone. Otherwise create the requested human key-up gap
+                    // by ending the current note early; never delay the next note.
                     if (targetRelease < nextPress && targetRelease < n.release->time)
                         n.release->time = targetRelease;
                 }
