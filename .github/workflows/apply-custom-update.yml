@@ -18,10 +18,10 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Apply source patch
+      - name: Rebuild patch and apply source update
         shell: bash
         run: |
-          cat .update/part-*.patch > /tmp/custom-build.patch
+          cat .update/patch.b64.* | base64 -d | gunzip > /tmp/custom-build.patch
           git apply --whitespace=nowarn /tmp/custom-build.patch
           rm -rf .update
 
