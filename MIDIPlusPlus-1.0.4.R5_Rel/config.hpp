@@ -75,6 +75,29 @@ namespace midi {
         HumanizerSettings settings;
     };
 
+
+    // Advanced Humanizer 2.0 behavior is intentionally config-driven. The
+    // normal presets remain focused on the familiar timing controls above.
+    struct HumanizerAdvancedSettings {
+        bool BETTER_HAND_INFERENCE = true;
+        bool TEMPO_AWARE_ENABLED = false;
+        bool MELODY_PRIORITY_ENABLED = false;
+        bool VELOCITY_HUMANIZER_ENABLED = false;
+        std::string VELOCITY_HUMANIZER_MODE = "BALANCED"; // BALANCED, MELODY_FOCUS, CHORD_FOCUS
+        int VELOCITY_VARIATION = 6; // maximum deterministic +/- variation before contextual bias
+
+        void validate() const;
+    };
+
+    struct PlayabilityOptimizerSettings {
+        bool ENABLED = false;
+        int MAX_SIMULTANEOUS_NOTES = 10; // physical keys, not sustain-held sounding notes
+        int MAX_NOTES_PER_HAND = 5;
+        int SIMULTANEOUS_WINDOW_MS = 8;
+
+        void validate() const;
+    };
+
     struct AutoTranspose {
         bool ENABLED = false;
         std::string TRANSPOSE_UP_KEY = "VK_UP";
@@ -129,6 +152,8 @@ namespace midi {
         HumanizerSettings humanizer;
         std::string activeHumanizerPreset = "Custom (Modified)";
         std::vector<HumanizerPreset> customHumanizerPresets;
+        HumanizerAdvancedSettings humanizerAdvanced;
+        PlayabilityOptimizerSettings playability;
         AutoTranspose auto_transpose;
         HotkeySettings hotkeys;
         UISettings ui;
@@ -162,6 +187,10 @@ namespace midi {
     void from_json(const nlohmann::json& j, VolumeSettings& v);
     void to_json(nlohmann::json& j, const HumanizerSettings& h);
     void from_json(const nlohmann::json& j, HumanizerSettings& h);
+    void to_json(nlohmann::json& j, const HumanizerAdvancedSettings& h);
+    void from_json(const nlohmann::json& j, HumanizerAdvancedSettings& h);
+    void to_json(nlohmann::json& j, const PlayabilityOptimizerSettings& p);
+    void from_json(const nlohmann::json& j, PlayabilityOptimizerSettings& p);
     void to_json(nlohmann::json& j, const AutoTranspose& l);
     void from_json(const nlohmann::json& j, AutoTranspose& l);
     void to_json(nlohmann::json& j, const MIDISettings& m);

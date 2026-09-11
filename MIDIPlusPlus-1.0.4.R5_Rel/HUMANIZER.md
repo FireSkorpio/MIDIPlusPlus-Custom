@@ -39,3 +39,17 @@ F4 is **Panic / Release All Notes**. It pauses playback, releases held keys/sust
 ## Config safety
 
 Malformed configs are preserved as `config.invalid.backup.json`, the error is written to `config_error.txt`, and relative config paths resolve beside `MIDI++.exe`.
+
+
+## Humanizer 2.0 experimental branch
+
+Humanizer 2.0 adds a more persistent two-hand model. Track names such as left/right hand or bass/treble staff are treated as strong hints; otherwise MIDI++ follows register, chord shape, and each hand's recent position. This allows a hand to travel across middle C instead of treating C4 as a permanent split.
+
+Advanced features live in `HUMANIZER_ADVANCED` and are intentionally conservative by default:
+
+- `BETTER_HAND_INFERENCE` defaults to `true`.
+- `TEMPO_AWARE_ENABLED` defaults to `false`. When enabled, stored preset values are left unchanged, but actual timing is tightened at fast tempos and slightly relaxed at slow tempos.
+- `MELODY_PRIORITY_ENABLED` defaults to `false`. When enabled, a likely melodic voice stays on the source Note On while supporting chord tones receive Humanizer spread.
+- `VELOCITY_HUMANIZER_ENABLED` defaults to `false`. Modes are `BALANCED`, `MELODY_FOCUS`, and `CHORD_FOCUS`; source velocity dynamics are preserved and only small contextual changes are added.
+
+`PLAYABILITY_OPTIMIZER` is separate and also defaults off. The UI exposes it as **Playability**. When enabled it limits one simultaneous physical attack to at most 5 notes per inferred hand and 10 total, preferring bass, top voice, likely melody, and stronger source notes. Sustain-held notes are not counted as fingers still pressing keys, so more than 10 notes may continue sounding under pedal.

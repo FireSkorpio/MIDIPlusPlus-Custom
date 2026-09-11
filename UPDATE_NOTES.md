@@ -58,3 +58,13 @@ The shipped **Casual** preset uses:
 - Added Reset Playback: returns to 0:00, speed 1.00x, transpose +0, and clears track mute/solo without changing Humanizer, Velocity, or Sustain mode.
 - Added recursive MIDI browser search across the entire `midi` folder and all subfolders.
 - Moved Reload out of an overlapping control position and added a dedicated playback status row.
+
+
+## Humanizer 2.0 branch
+
+- Better hand inference tracks named bass/treble or left/right piano tracks plus recent hand position.
+- Optional Playability Optimizer toggle: max 5 simultaneous physical notes per hand, 10 total; sustain-held sounding notes may exceed 10.
+- Optional config-only tempo-aware Humanizer, disabled by default.
+- Optional config-only melody-priority timing, disabled by default.
+- Optional config-only velocity Humanizer with BALANCED, MELODY_FOCUS, and CHORD_FOCUS modes, disabled by default.
+- Humanizer 2.0 remains isolated from `main`; `main` receives only the separately validated QoL changes.

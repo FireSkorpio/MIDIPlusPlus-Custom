@@ -43,6 +43,28 @@ namespace midi {
             throw ConfigException("SEQUENTIAL_MIN_GAP_MS cannot exceed SEQUENTIAL_MAX_GAP_MS");
     }
 
+
+    void HumanizerAdvancedSettings::validate() const {
+        if (VELOCITY_HUMANIZER_MODE != "BALANCED" &&
+            VELOCITY_HUMANIZER_MODE != "MELODY_FOCUS" &&
+            VELOCITY_HUMANIZER_MODE != "CHORD_FOCUS") {
+            throw ConfigException("VELOCITY_HUMANIZER_MODE must be BALANCED, MELODY_FOCUS, or CHORD_FOCUS");
+        }
+        if (VELOCITY_VARIATION < 0 || VELOCITY_VARIATION > 24)
+            throw ConfigException("VELOCITY_VARIATION must be between 0 and 24");
+    }
+
+    void PlayabilityOptimizerSettings::validate() const {
+        if (MAX_SIMULTANEOUS_NOTES < 1 || MAX_SIMULTANEOUS_NOTES > 10)
+            throw ConfigException("MAX_SIMULTANEOUS_NOTES must be between 1 and 10");
+        if (MAX_NOTES_PER_HAND < 1 || MAX_NOTES_PER_HAND > 5)
+            throw ConfigException("MAX_NOTES_PER_HAND must be between 1 and 5");
+        if (MAX_SIMULTANEOUS_NOTES < MAX_NOTES_PER_HAND)
+            throw ConfigException("MAX_SIMULTANEOUS_NOTES cannot be smaller than MAX_NOTES_PER_HAND");
+        if (SIMULTANEOUS_WINDOW_MS < 0 || SIMULTANEOUS_WINDOW_MS > 50)
+            throw ConfigException("SIMULTANEOUS_WINDOW_MS must be between 0 and 50");
+    }
+
     void AutoTranspose::validate() const {
         if (TRANSPOSE_UP_KEY.empty() || TRANSPOSE_DOWN_KEY.empty()) {
             throw ConfigException("Transpose hotkeys cannot be empty");
@@ -142,6 +164,8 @@ namespace midi {
             playback.validate();
             volume.validate();
             humanizer.validate();
+            humanizerAdvanced.validate();
+            playability.validate();
             if (customHumanizerPresets.size() > MAX_CUSTOM_HUMANIZER_PRESETS)
                 throw ConfigException("A maximum of 5 custom Humanizer presets is supported");
             for (const auto& preset : customHumanizerPresets) {
@@ -270,6 +294,45 @@ namespace midi {
         h.validate();
     }
 
+
+    void to_json(json& j, const HumanizerAdvancedSettings& h) {
+        j = json{
+            {"BETTER_HAND_INFERENCE", h.BETTER_HAND_INFERENCE},
+            {"TEMPO_AWARE_ENABLED", h.TEMPO_AWARE_ENABLED},
+            {"MELODY_PRIORITY_ENABLED", h.MELODY_PRIORITY_ENABLED},
+            {"VELOCITY_HUMANIZER_ENABLED", h.VELOCITY_HUMANIZER_ENABLED},
+            {"VELOCITY_HUMANIZER_MODE", h.VELOCITY_HUMANIZER_MODE},
+            {"VELOCITY_VARIATION", h.VELOCITY_VARIATION}
+        };
+    }
+
+    void from_json(const json& j, HumanizerAdvancedSettings& h) {
+        if (j.contains("BETTER_HAND_INFERENCE")) j.at("BETTER_HAND_INFERENCE").get_to(h.BETTER_HAND_INFERENCE);
+        if (j.contains("TEMPO_AWARE_ENABLED")) j.at("TEMPO_AWARE_ENABLED").get_to(h.TEMPO_AWARE_ENABLED);
+        if (j.contains("MELODY_PRIORITY_ENABLED")) j.at("MELODY_PRIORITY_ENABLED").get_to(h.MELODY_PRIORITY_ENABLED);
+        if (j.contains("VELOCITY_HUMANIZER_ENABLED")) j.at("VELOCITY_HUMANIZER_ENABLED").get_to(h.VELOCITY_HUMANIZER_ENABLED);
+        if (j.contains("VELOCITY_HUMANIZER_MODE")) j.at("VELOCITY_HUMANIZER_MODE").get_to(h.VELOCITY_HUMANIZER_MODE);
+        if (j.contains("VELOCITY_VARIATION")) j.at("VELOCITY_VARIATION").get_to(h.VELOCITY_VARIATION);
+        h.validate();
+    }
+
+    void to_json(json& j, const PlayabilityOptimizerSettings& p) {
+        j = json{
+            {"ENABLED", p.ENABLED},
+            {"MAX_SIMULTANEOUS_NOTES", p.MAX_SIMULTANEOUS_NOTES},
+            {"MAX_NOTES_PER_HAND", p.MAX_NOTES_PER_HAND},
+            {"SIMULTANEOUS_WINDOW_MS", p.SIMULTANEOUS_WINDOW_MS}
+        };
+    }
+
+    void from_json(const json& j, PlayabilityOptimizerSettings& p) {
+        if (j.contains("ENABLED")) j.at("ENABLED").get_to(p.ENABLED);
+        if (j.contains("MAX_SIMULTANEOUS_NOTES")) j.at("MAX_SIMULTANEOUS_NOTES").get_to(p.MAX_SIMULTANEOUS_NOTES);
+        if (j.contains("MAX_NOTES_PER_HAND")) j.at("MAX_NOTES_PER_HAND").get_to(p.MAX_NOTES_PER_HAND);
+        if (j.contains("SIMULTANEOUS_WINDOW_MS")) j.at("SIMULTANEOUS_WINDOW_MS").get_to(p.SIMULTANEOUS_WINDOW_MS);
+        p.validate();
+    }
+
     void to_json(json& j, const AutoTranspose& at) {
         j = json{
             {"ENABLED", at.ENABLED},
@@ -381,6 +444,8 @@ namespace midi {
             {"VOLUME_SETTINGS", c.volume},
             {"KEY_MAPPINGS", c.key_mappings},
             {"HUMANIZER_SETTINGS", c.humanizer},
+            {"HUMANIZER_ADVANCED", c.humanizerAdvanced},
+            {"PLAYABILITY_OPTIMIZER", c.playability},
             {"HUMANIZER_ACTIVE_PRESET", c.activeHumanizerPreset},
             {"HUMANIZER_PRESETS", json::array()},
             {"AUTO_TRANSPOSE", c.auto_transpose},
@@ -421,6 +486,11 @@ namespace midi {
             if (legacy.contains("ENABLED"))
                 legacy.at("ENABLED").get_to(c.humanizer.ENABLED);
         }
+
+        if (j.contains("HUMANIZER_ADVANCED"))
+            j.at("HUMANIZER_ADVANCED").get_to(c.humanizerAdvanced);
+        if (j.contains("PLAYABILITY_OPTIMIZER"))
+            j.at("PLAYABILITY_OPTIMIZER").get_to(c.playability);
 
         c.activeHumanizerPreset = "Custom (Modified)";
         if (j.contains("HUMANIZER_ACTIVE_PRESET") && j.at("HUMANIZER_ACTIVE_PRESET").is_string())
@@ -519,6 +589,8 @@ namespace midi {
         humanizer.PERFORMANCE_SEED = 0x6d6964692b2b4831ULL;
         activeHumanizerPreset = "Casual";
         customHumanizerPresets.clear();
+        humanizerAdvanced = HumanizerAdvancedSettings{};
+        playability = PlayabilityOptimizerSettings{};
 
         // AutoTranspose settings
         auto_transpose = {

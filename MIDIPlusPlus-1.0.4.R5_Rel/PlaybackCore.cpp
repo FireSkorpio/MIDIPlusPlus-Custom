@@ -9,6 +9,8 @@
 #include <iostream>
 #include <fstream>
 #include <filesystem>
+#include <unordered_set>
+#include <cctype>
 
 #pragma comment(lib, "avrt.lib")
 
@@ -524,8 +526,12 @@ void VirtualPianoPlayer::prepare_event_queue() {
 }
 
 void VirtualPianoPlayer::apply_humanizer() {
-    const auto& settings = midi::Config::getInstance().humanizer;
-    if (!settings.ENABLED)
+    const auto& cfg = midi::Config::getInstance();
+    const auto& settings = cfg.humanizer;
+    const auto& advanced = cfg.humanizerAdvanced;
+    const auto& optimizer = cfg.playability;
+    const bool humanizerEnabled = settings.ENABLED;
+    if (!humanizerEnabled && !optimizer.ENABLED)
         return;
 
     using ns = std::chrono::nanoseconds;
@@ -543,6 +549,7 @@ void VirtualPianoPlayer::apply_humanizer() {
         int pitch = 60;
         int trackIndex = -1;
         Hand hand = Hand::Right;
+        bool dropped = false;
     };
 
     struct HandGroup {
@@ -573,6 +580,50 @@ void VirtualPianoPlayer::apply_humanizer() {
         if (ms <= 0.0)
             return ns(0);
         return ns(static_cast<ns::rep>(ms * 1000000.0 + 0.5));
+    };
+
+
+    // Build a tempo timeline in real time so optional tempo-aware timing can
+    // tighten fast passages and relax slower passages without changing the
+    // user's stored preset values.
+    std::vector<std::pair<ns, double>> tempoTimeline;
+    tempoTimeline.push_back({ ns::zero(), 120.0 });
+    if (advanced.TEMPO_AWARE_ENABLED && midi_file.division != 0 && (midi_file.division & 0x8000) == 0) {
+        auto changes = midi_file.tempoChanges;
+        std::sort(changes.begin(), changes.end(), [](const TempoChange& a, const TempoChange& b) { return a.tick < b.tick; });
+        uint32_t currentTick = 0;
+        uint32_t currentTempo = 500000; // 120 BPM
+        ns currentTime = ns::zero();
+        tempoTimeline.clear();
+        tempoTimeline.push_back({ currentTime, 120.0 });
+        for (const auto& change : changes) {
+            if (change.tick < currentTick || change.microsecondsPerQuarter == 0)
+                continue;
+            const uint64_t deltaTicks = static_cast<uint64_t>(change.tick - currentTick);
+            const long double deltaMicros = static_cast<long double>(deltaTicks) *
+                static_cast<long double>(currentTempo) / static_cast<long double>(midi_file.division);
+            currentTime += std::chrono::duration_cast<ns>(std::chrono::duration<long double, std::micro>(deltaMicros));
+            currentTick = change.tick;
+            currentTempo = change.microsecondsPerQuarter;
+            const double bpm = 60000000.0 / static_cast<double>(currentTempo);
+            tempoTimeline.push_back({ currentTime, bpm });
+        }
+    }
+
+    auto timingScaleAt = [&](ns when) noexcept -> double {
+        if (!advanced.TEMPO_AWARE_ENABLED || tempoTimeline.empty())
+            return 1.0;
+        double bpm = tempoTimeline.front().second;
+        for (const auto& point : tempoTimeline) {
+            if (point.first > when)
+                break;
+            bpm = point.second;
+        }
+        if (bpm <= 70.0)
+            return 1.15;
+        if (bpm < 120.0)
+            return 1.0 + ((120.0 - bpm) / 50.0) * 0.15;
+        return std::clamp(120.0 / std::max(120.0, bpm), 0.55, 1.0);
     };
 
     // Pair each Note On with its Note Off.  Pairing is track-aware so two
@@ -662,14 +713,45 @@ void VirtualPianoPlayer::apply_humanizer() {
         trackMedian[track] = pitches[pitches.size() / 2];
     }
 
+    // Explicit piano-track naming is the strongest clue when present. Many
+    // piano MIDIs label their two staves/tracks as left/bass and right/treble.
+    // When names are absent, register and continuity remain the fallback.
+    std::unordered_map<int, int> trackHandHint; // -1 left, +1 right, 0 unknown
+    auto lowerText = [](std::string value) {
+        std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        return value;
+    };
+    for (const auto& [track, median] : trackMedian) {
+        std::string name;
+        if (track >= 0 && static_cast<size_t>(track) < midi_file.tracks.size())
+            name = lowerText(midi_file.tracks[static_cast<size_t>(track)].name);
+        int hint = 0;
+        const bool leftNamed = name.find("left hand") != std::string::npos || name == "lh" ||
+            name.find("bass clef") != std::string::npos || name.find("bass staff") != std::string::npos ||
+            name.find("lower staff") != std::string::npos || name.find("left") != std::string::npos;
+        const bool rightNamed = name.find("right hand") != std::string::npos || name == "rh" ||
+            name.find("treble clef") != std::string::npos || name.find("treble staff") != std::string::npos ||
+            name.find("upper staff") != std::string::npos || name.find("right") != std::string::npos;
+        if (leftNamed && !rightNamed) hint = -1;
+        else if (rightNamed && !leftNamed) hint = 1;
+        else if (name == "bass" && median <= 60) hint = -1;
+        else if (name == "treble" && median >= 60) hint = 1;
+        trackHandHint[track] = hint;
+    }
+
     for (auto& n : notes) {
         const int median = trackMedian[n.trackIndex];
-        if (median <= 55)          // G3 or below: strongly left-hand track
+        const int hint = advanced.BETTER_HAND_INFERENCE ? trackHandHint[n.trackIndex] : 0;
+        if (hint < 0)
             n.hand = Hand::Left;
-        else if (median >= 65)     // F4 or above: strongly right-hand track
+        else if (hint > 0)
+            n.hand = Hand::Right;
+        else if (median <= 55)
+            n.hand = Hand::Left;
+        else if (median >= 65)
             n.hand = Hand::Right;
         else
-            n.hand = (n.pitch < 60) ? Hand::Left : Hand::Right; // C4 fallback
+            n.hand = (n.pitch < 60) ? Hand::Left : Hand::Right;
     }
 
     // Build onset groups from ORIGINAL Note On times.  Humanization never
@@ -702,9 +784,11 @@ void VirtualPianoPlayer::apply_humanizer() {
         bool hasStrongLeftTrack = false;
         bool hasStrongRightTrack = false;
         for (size_t idx : byPitch) {
-            const int median = trackMedian[notes[idx].trackIndex];
-            hasStrongLeftTrack |= (median <= 55);
-            hasStrongRightTrack |= (median >= 65);
+            const int track = notes[idx].trackIndex;
+            const int median = trackMedian[track];
+            const int hint = advanced.BETTER_HAND_INFERENCE ? trackHandHint[track] : 0;
+            hasStrongLeftTrack |= (hint < 0) || (median <= 55);
+            hasStrongRightTrack |= (hint > 0) || (median >= 65);
         }
         if (hasStrongLeftTrack && hasStrongRightTrack)
             continue; // explicit track/register evidence is stronger than pitch split
@@ -745,6 +829,153 @@ void VirtualPianoPlayer::apply_humanizer() {
         }
     }
 
+
+    if (advanced.BETTER_HAND_INFERENCE) {
+        // Track where each hand has recently been instead of re-splitting every
+        // ambiguous note around middle C. This allows both hands to travel into
+        // either staff/register while still favoring physically nearby motion.
+        double leftCenter = 48.0;   // C3
+        double rightCenter = 67.0;  // G4
+        for (const auto& group : onsetGroups) {
+            for (size_t idx : group) {
+                if (trackHandHint[notes[idx].trackIndex] != 0)
+                    continue;
+                const double pitch = static_cast<double>(notes[idx].pitch);
+                double leftCost = std::abs(pitch - leftCenter);
+                double rightCost = std::abs(pitch - rightCenter);
+                if (pitch > rightCenter + 7.0) leftCost += 8.0;
+                if (pitch < leftCenter - 7.0) rightCost += 8.0;
+                notes[idx].hand = leftCost <= rightCost ? Hand::Left : Hand::Right;
+            }
+
+            auto collectHand = [&](Hand hand) {
+                std::vector<size_t> out;
+                for (size_t idx : group)
+                    if (notes[idx].hand == hand) out.push_back(idx);
+                return out;
+            };
+            auto left = collectHand(Hand::Left);
+            auto right = collectHand(Hand::Right);
+
+            // Rebalance an otherwise playable <=10-note gesture so one hand is
+            // not assigned six notes while the other hand still has fingers free.
+            while (left.size() > 5 && right.size() < 5) {
+                auto it = std::max_element(left.begin(), left.end(), [&](size_t a, size_t b) { return notes[a].pitch < notes[b].pitch; });
+                notes[*it].hand = Hand::Right;
+                right.push_back(*it);
+                left.erase(it);
+            }
+            while (right.size() > 5 && left.size() < 5) {
+                auto it = std::min_element(right.begin(), right.end(), [&](size_t a, size_t b) { return notes[a].pitch < notes[b].pitch; });
+                notes[*it].hand = Hand::Left;
+                left.push_back(*it);
+                right.erase(it);
+            }
+
+            if (!left.empty()) {
+                double average = 0.0;
+                for (size_t idx : left) average += notes[idx].pitch;
+                average /= static_cast<double>(left.size());
+                leftCenter = leftCenter * 0.60 + average * 0.40;
+            }
+            if (!right.empty()) {
+                double average = 0.0;
+                for (size_t idx : right) average += notes[idx].pitch;
+                average /= static_cast<double>(right.size());
+                rightCenter = rightCenter * 0.60 + average * 0.40;
+            }
+        }
+    }
+
+    // Identify a likely melodic voice for optional melody-priority timing and
+    // for the optimizer's importance scoring. Right-hand continuity is favored,
+    // but the highest global voice remains a fallback.
+    std::unordered_set<NoteEvent*> melodyPresses;
+    std::unordered_map<NoteEvent*, size_t> onsetSize;
+    int previousMelodyPitch = -1;
+    for (const auto& group : onsetGroups) {
+        for (size_t idx : group)
+            onsetSize[notes[idx].press] = group.size();
+        if (group.empty())
+            continue;
+        size_t best = group.front();
+        double bestScore = -1e9;
+        for (size_t idx : group) {
+            const auto& n = notes[idx];
+            double score = static_cast<double>(n.pitch) * 1.5 + static_cast<double>(n.press->velocity) * 0.05;
+            if (n.hand == Hand::Right) score += 18.0;
+            if (previousMelodyPitch >= 0) score -= std::abs(n.pitch - previousMelodyPitch) * 0.75;
+            if (score > bestScore) {
+                bestScore = score;
+                best = idx;
+            }
+        }
+        melodyPresses.insert(notes[best].press);
+        previousMelodyPitch = notes[best].pitch;
+    }
+
+    size_t optimizerDroppedCount = 0;
+    if (optimizer.ENABLED) {
+        const ns optimizerWindow = std::chrono::milliseconds(optimizer.SIMULTANEOUS_WINDOW_MS);
+        auto importance = [&](size_t idx, int lowPitch, int highPitch) {
+            const auto& n = notes[idx];
+            double score = static_cast<double>(n.press->velocity);
+            if (melodyPresses.count(n.press)) score += 500.0;
+            if (n.pitch == lowPitch) score += 350.0;   // bass anchor
+            if (n.pitch == highPitch) score += 300.0; // top voice
+            score += (n.hand == Hand::Left ? (127 - n.pitch) : n.pitch) * 0.12;
+            return score;
+        };
+
+        for (size_t i = 0; i < notes.size();) {
+            const ns start = notes[i].originalPress;
+            std::vector<size_t> group;
+            size_t j = i;
+            while (j < notes.size() && notes[j].originalPress - start <= optimizerWindow) {
+                group.push_back(j);
+                ++j;
+            }
+            int lowPitch = 127, highPitch = 0;
+            for (size_t idx : group) {
+                lowPitch = std::min(lowPitch, notes[idx].pitch);
+                highPitch = std::max(highPitch, notes[idx].pitch);
+            }
+
+            auto trimHand = [&](Hand hand) {
+                std::vector<size_t> candidates;
+                for (size_t idx : group)
+                    if (!notes[idx].dropped && notes[idx].hand == hand) candidates.push_back(idx);
+                if (candidates.size() <= static_cast<size_t>(optimizer.MAX_NOTES_PER_HAND))
+                    return;
+                std::stable_sort(candidates.begin(), candidates.end(), [&](size_t a, size_t b) {
+                    return importance(a, lowPitch, highPitch) > importance(b, lowPitch, highPitch);
+                });
+                for (size_t k = static_cast<size_t>(optimizer.MAX_NOTES_PER_HAND); k < candidates.size(); ++k) {
+                    notes[candidates[k]].dropped = true;
+                    ++optimizerDroppedCount;
+                }
+            };
+            trimHand(Hand::Left);
+            trimHand(Hand::Right);
+
+            std::vector<size_t> kept;
+            for (size_t idx : group)
+                if (!notes[idx].dropped) kept.push_back(idx);
+            if (kept.size() > static_cast<size_t>(optimizer.MAX_SIMULTANEOUS_NOTES)) {
+                std::stable_sort(kept.begin(), kept.end(), [&](size_t a, size_t b) {
+                    return importance(a, lowPitch, highPitch) > importance(b, lowPitch, highPitch);
+                });
+                for (size_t k = static_cast<size_t>(optimizer.MAX_SIMULTANEOUS_NOTES); k < kept.size(); ++k) {
+                    notes[kept[k]].dropped = true;
+                    ++optimizerDroppedCount;
+                }
+            }
+            i = j;
+        }
+        if (optimizerDroppedCount > 0)
+            std::cout << "[Playability] Simplified " << optimizerDroppedCount << " simultaneous note(s) to respect 5 fingers per hand / 10 total.\n";
+    }
+
     // Convert each onset group into at most one gesture per hand.  A gesture
     // may be a single melody note or a 2-5 note chord.
     std::vector<HandGroup> leftGroups;
@@ -756,6 +987,8 @@ void VirtualPianoPlayer::apply_humanizer() {
         right.originalStart = left.originalStart;
 
         for (size_t idx : group) {
+            if (notes[idx].dropped)
+                continue;
             if (notes[idx].hand == Hand::Left)
                 left.members.push_back(idx);
             else
@@ -848,8 +1081,9 @@ void VirtualPianoPlayer::apply_humanizer() {
             else if (count == 3) countScale = 0.65;
             else if (count == 4) countScale = 0.85;
 
-            double minPressSpreadMs = static_cast<double>(settings.CHORD_PRESS_MIN_SPREAD_MS);
-            double maxPressSpreadMs = settings.CHORD_PRESS_MAX_SPREAD_MS * countScale;
+            const double tempoScale = timingScaleAt(group.originalStart);
+            double minPressSpreadMs = static_cast<double>(settings.CHORD_PRESS_MIN_SPREAD_MS) * tempoScale;
+            double maxPressSpreadMs = settings.CHORD_PRESS_MAX_SPREAD_MS * countScale * tempoScale;
             if (minPressSpreadMs > maxPressSpreadMs)
                 std::swap(minPressSpreadMs, maxPressSpreadMs);
 
@@ -908,6 +1142,10 @@ void VirtualPianoPlayer::apply_humanizer() {
                     : 0.0;
 
                 LogicalNote& n = notes[fingered[hit].noteIndex];
+                if (advanced.MELODY_PRIORITY_ENABLED && melodyPresses.count(n.press)) {
+                    n.press->time = n.originalPress;
+                    continue;
+                }
                 const ns candidate = group.originalStart + millisToNs(offsetMs);
                 ns newPress = std::max(n.originalPress, candidate);
                 const ns latestSafePress = n.originalRelease - minimumNoteLength;
@@ -922,8 +1160,8 @@ void VirtualPianoPlayer::apply_humanizer() {
             // remains at the original MIDI Note Off, at least one other finger
             // aims for the selected early-release spread, and the rest vary in
             // between. No note is ever extended beyond its original release.
-            double minReleaseSpreadMs = static_cast<double>(settings.CHORD_RELEASE_MIN_SPREAD_MS);
-            double maxReleaseSpreadMs = settings.CHORD_RELEASE_MAX_SPREAD_MS * countScale;
+            double minReleaseSpreadMs = static_cast<double>(settings.CHORD_RELEASE_MIN_SPREAD_MS) * tempoScale;
+            double maxReleaseSpreadMs = settings.CHORD_RELEASE_MAX_SPREAD_MS * countScale * tempoScale;
             if (minReleaseSpreadMs > maxReleaseSpreadMs)
                 std::swap(minReleaseSpreadMs, maxReleaseSpreadMs);
 
@@ -968,10 +1206,12 @@ void VirtualPianoPlayer::apply_humanizer() {
         }
     };
 
-    humanizeHandGroups(leftGroups, Hand::Left);
-    humanizeHandGroups(rightGroups, Hand::Right);
+    if (humanizerEnabled) {
+        humanizeHandGroups(leftGroups, Hand::Left);
+        humanizeHandGroups(rightGroups, Hand::Right);
+    }
 
-    if (settings.SEQUENTIAL_ARTICULATION &&
+    if (humanizerEnabled && settings.SEQUENTIAL_ARTICULATION &&
         settings.SEQUENTIAL_MAX_GAP_MS > 0 &&
         settings.SEQUENTIAL_TRIGGER_WINDOW_MS > 0) {
 
@@ -1014,8 +1254,9 @@ void VirtualPianoPlayer::apply_humanizer() {
                     seed ^= static_cast<uint64_t>((n.pitch + 3) * 193 + (nearestDistance + 1) * 389);
                     seed ^= static_cast<uint64_t>(hand == Hand::Left ? 0x4c534551ULL : 0x52534551ULL);
 
-                    double minGapMs = static_cast<double>(settings.SEQUENTIAL_MIN_GAP_MS);
-                    double maxGapMs = static_cast<double>(settings.SEQUENTIAL_MAX_GAP_MS);
+                    const double sequentialScale = timingScaleAt(current.originalStart);
+                    double minGapMs = static_cast<double>(settings.SEQUENTIAL_MIN_GAP_MS) * sequentialScale;
+                    double maxGapMs = static_cast<double>(settings.SEQUENTIAL_MAX_GAP_MS) * sequentialScale;
                     if (minGapMs > maxGapMs)
                         std::swap(minGapMs, maxGapMs);
 
@@ -1055,6 +1296,47 @@ void VirtualPianoPlayer::apply_humanizer() {
 
         articulateGroups(leftGroups, Hand::Left);
         articulateGroups(rightGroups, Hand::Right);
+    }
+
+
+    if (humanizerEnabled && advanced.VELOCITY_HUMANIZER_ENABLED) {
+        for (auto& n : notes) {
+            if (n.dropped || !n.press)
+                continue;
+            uint64_t seed = static_cast<uint64_t>(n.originalPress.count());
+            seed ^= static_cast<uint64_t>((n.pitch + 11) * 811 + (n.trackIndex + 13) * 313);
+            const double randomUnit = unitRandom(seed ^ 0x56454cULL);
+            int delta = static_cast<int>(std::llround((randomUnit * 2.0 - 1.0) * advanced.VELOCITY_VARIATION));
+            const bool melody = melodyPresses.count(n.press) != 0;
+            const bool chordMember = onsetSize[n.press] > 1;
+
+            if (advanced.VELOCITY_HUMANIZER_MODE == "MELODY_FOCUS") {
+                if (melody) delta += 8;
+                else if (chordMember) delta -= 3;
+            }
+            else if (advanced.VELOCITY_HUMANIZER_MODE == "CHORD_FOCUS") {
+                if (chordMember) delta += 4;
+                if (melody) delta += 1;
+            }
+            else { // BALANCED
+                if (melody) delta += 3;
+                else if (chordMember) delta -= 1;
+            }
+            n.press->velocity = std::clamp(n.press->velocity + delta, 1, 127);
+        }
+    }
+
+    if (optimizerDroppedCount > 0) {
+        std::unordered_set<NoteEvent*> droppedEvents;
+        for (const auto& n : notes) {
+            if (n.dropped) {
+                droppedEvents.insert(n.press);
+                droppedEvents.insert(n.release);
+            }
+        }
+        note_buffer.erase(std::remove_if(note_buffer.begin(), note_buffer.end(), [&](NoteEvent* event) {
+            return droppedEvents.count(event) != 0;
+        }), note_buffer.end());
     }
 
     // Humanization may have moved both Note On and Note Off timestamps.

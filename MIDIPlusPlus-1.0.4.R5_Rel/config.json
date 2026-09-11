@@ -204,5 +204,19 @@
         "VOLUME_STEP": 10
     },
     "HUMANIZER_ACTIVE_PRESET": "Casual",
-    "HUMANIZER_PRESETS": []
+    "HUMANIZER_PRESETS": [],
+    "HUMANIZER_ADVANCED": {
+        "BETTER_HAND_INFERENCE": true,
+        "TEMPO_AWARE_ENABLED": false,
+        "MELODY_PRIORITY_ENABLED": false,
+        "VELOCITY_HUMANIZER_ENABLED": false,
+        "VELOCITY_HUMANIZER_MODE": "BALANCED",
+        "VELOCITY_VARIATION": 6
+    },
+    "PLAYABILITY_OPTIMIZER": {
+        "ENABLED": false,
+        "MAX_SIMULTANEOUS_NOTES": 10,
+        "MAX_NOTES_PER_HAND": 5,
+        "SIMULTANEOUS_WINDOW_MS": 8
+    }
 }

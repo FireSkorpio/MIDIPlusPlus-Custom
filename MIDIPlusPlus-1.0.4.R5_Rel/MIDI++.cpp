@@ -103,7 +103,7 @@ static HWND g_hToolTip = nullptr;
 namespace Layout {
     // Window dimensions
     static const int WIN_W = 880;
-    static const int WIN_H = 835;
+    static const int WIN_H = 865;
 
     // MIDI Files group
     static const int FILES_X = 10;
@@ -132,7 +132,7 @@ namespace Layout {
     static const int PADV_X = 260;
     static const int PADV_Y = PBASIC_Y + PBASIC_H + 5;
     static const int PADV_W = 600;
-    static const int PADV_H = 100;
+    static const int PADV_H = 130;
 
     // Config group
     static const int CFG_X = 260;
@@ -209,6 +209,7 @@ enum ControlID {
     ID_BTN_TRANSPOSE,
     ID_BTN_TRANSPOSEOUT,
     ID_BTN_HUMANIZER,
+    ID_BTN_PLAYABILITY,
     ID_BTN_HELP,
     ID_CB_VELOCITY_CURVE,
     ID_SLIDER_SUSTAIN_CUTOFF,
@@ -259,6 +260,7 @@ static bool IsToggleButtonID(int id) {
     case ID_BTN_VELOCITY:
     case ID_BTN_SUSTAIN:
     case ID_BTN_TRANSPOSEOUT:
+    case ID_BTN_PLAYABILITY:
     case ID_BTN_MIDI2QWERTY:
     case ID_BTN_MIDICONNECT:
         return true;
@@ -913,6 +915,7 @@ static void UpdateMidiDetails() {
     if (humanizer)
         lastLine += " (Preset: " + midi::Config::getInstance().activeHumanizerPreset + ")";
     lastLine += (filterDrums ? " (Ch10 Filter: On)" : " (Ch10 Filter: Off)");
+    lastLine += (midi::Config::getInstance().playability.ENABLED ? " (Optimizer: On)" : " (Optimizer: Off)");
     SendMessageA(g_editDetails, EM_REPLACESEL, FALSE, reinterpret_cast<LPARAM>(lastLine.c_str()));
 }
 static void UpdateTrackInfo() {
@@ -1754,6 +1757,11 @@ static const wchar_t* kHelpText =
     L"1000 ms = 1 second. Values from 0-1000 ms are accepted. Large values can intentionally create exaggerated/sloppy playing.\r\n"
     L"The Humanizer never starts a note earlier than the MIDI and never extends a note past its original Note Off.\r\n"
     L"If a requested timing value is impossible for a very short note, MIDI++ uses as much as physically fits.\r\n\r\n"
+    L"HUMANIZER 2.0 ADVANCED CONFIG\r\n"
+    L"Better hand inference is enabled by default and tracks left/right staff clues plus recent hand position.\r\n"
+    L"Tempo-aware timing, melody-priority timing, and velocity humanization are config-only and disabled by default.\r\n"
+    L"Velocity Humanizer modes: BALANCED, MELODY_FOCUS, CHORD_FOCUS.\r\n"
+    L"Playability is the visible optional toggle; it limits simultaneous physical attacks, not sustain-held sounding notes.\r\n\r\n"
     L"CONFIG SAFETY\r\n"
     L"If config.json cannot be loaded, MIDI++ no longer overwrites it. It uses defaults for that launch and creates config.invalid.backup.json plus config_error.txt.\r\n";
 
@@ -2044,6 +2052,15 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
             hWnd, reinterpret_cast<HMENU>(ID_CB_VELOCITY_CURVE), g_hInst, nullptr);
         RefreshVelocityCurveCombo(hWnd);
 
+        CreateWindowW(L"button", L"Playability",
+            WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
+            Layout::PADV_X + 15, Layout::PADV_Y + 96, 95, 27,
+            hWnd, reinterpret_cast<HMENU>(ID_BTN_PLAYABILITY), g_hInst, nullptr);
+        CreateWindowW(L"static", L"Optional: max 5 notes/hand, 10 total per simultaneous attack",
+            WS_CHILD | WS_VISIBLE,
+            Layout::PADV_X + 120, Layout::PADV_Y + 101, 430, 20,
+            hWnd, nullptr, g_hInst, nullptr);
+
         // Config Group
         CreateWindowW(L"button", L"Config",
             WS_CHILD | WS_VISIBLE | BS_GROUPBOX,
@@ -2132,11 +2149,12 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
             hWnd, reinterpret_cast<HMENU>(ID_BTN_REFRESH_VCURVE), g_hInst, nullptr);
 
         // Initialize Toggle States
-        std::vector<int> toggles = { ID_BTN_88KEY, ID_BTN_VOLADJ, ID_BTN_VELOCITY, ID_BTN_SUSTAIN, ID_BTN_TRANSPOSEOUT, ID_BTN_MIDI2QWERTY };
+        std::vector<int> toggles = { ID_BTN_88KEY, ID_BTN_VOLADJ, ID_BTN_VELOCITY, ID_BTN_SUSTAIN, ID_BTN_TRANSPOSEOUT, ID_BTN_PLAYABILITY, ID_BTN_MIDI2QWERTY };
         for (int t : toggles)
             g_toggleStates[t] = false;
         if (g_player && g_player->eightyEightKeyModeActive)
             g_toggleStates[ID_BTN_88KEY] = true;
+        g_toggleStates[ID_BTN_PLAYABILITY] = midi::Config::getInstance().playability.ENABLED;
 
         // Initial Setup
         DragAcceptFiles(hWnd, TRUE);
@@ -2157,6 +2175,7 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
         AddToolTip(hWnd, ID_BTN_VOLADJ, L"Automatically calibrate and adjust Roblox volume/velocity keys.");
         AddToolTip(hWnd, ID_BTN_VELOCITY, L"Use MIDI note velocity when choosing virtual-piano velocity keys.");
         AddToolTip(hWnd, ID_BTN_TRANSPOSEOUT, L"Transpose notes that would otherwise fall outside the selected keyboard range.");
+        AddToolTip(hWnd, ID_BTN_PLAYABILITY, L"Optional virtual-piano optimizer. Limits simultaneous physical attacks to 5 notes per hand and 10 total while preserving bass, top voice, velocity, and likely melody importance.");
         AddToolTip(hWnd, ID_BTN_MIDI2QWERTY, L"Use a physical MIDI input device to send QWERTY piano keys.");
         AddToolTip(hWnd, ID_BTN_MIDICONNECT, L"Alternate live MIDI input mode using the specialized key injector.");
         AddToolTip(hWnd, ID_SLIDER_SEEK, L"Drag to seek directly through the loaded song.");
@@ -2330,6 +2349,25 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
                 UpdateTrackInfo();
                 UpdateMidiDetails();
                 SetWindowTextW(GetDlgItem(hWnd, ID_STATIC_STATUS), L"Playback reset");
+            }
+            break;
+
+        case ID_BTN_PLAYABILITY:
+            if (code == BN_CLICKED) {
+                auto& cfg = midi::Config::getInstance();
+                cfg.playability.ENABLED = !cfg.playability.ENABLED;
+                g_toggleStates[ID_BTN_PLAYABILITY] = cfg.playability.ENABLED;
+                InvalidateRect(GetDlgItem(hWnd, ID_BTN_PLAYABILITY), nullptr, TRUE);
+                try {
+                    cfg.saveToFile("config.json");
+                    std::cout << "[Playability] Optimizer " << (cfg.playability.ENABLED ? "enabled" : "disabled") << ".\n";
+                    if (g_player && g_player->midiFileSelected.load(std::memory_order_acquire))
+                        ReloadCurrentMidi(hWnd);
+                    UpdateMidiDetails();
+                }
+                catch (const std::exception& ex) {
+                    MessageBoxW(hWnd, Utf8ToWide(ex.what()).c_str(), L"Playability Optimizer", MB_OK | MB_ICONERROR);
+                }
             }
             break;
 
