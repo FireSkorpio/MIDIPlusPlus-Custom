@@ -37,8 +37,16 @@ jobs:
           Copy-Item $exe.FullName "dist\MIDI++.exe"
           Copy-Item "$src\config.json" "dist\config.json"
 
+          if (Test-Path "$src\HUMANIZER.md") {
+            Copy-Item "$src\HUMANIZER.md" "dist\HUMANIZER.md"
+          }
+
+          New-Item -ItemType Directory -Force -Path "dist\midi" | Out-Null
+          "Place .mid/.midi files here, or drag MIDI files directly onto MIDI++." |
+            Set-Content "dist\midi\README.txt"
+
           Write-Host "Package contents:"
-          Get-ChildItem -Path "dist"
+          Get-ChildItem -Path "dist" -Recurse
 
       - name: Upload finished MIDI++
         uses: actions/upload-artifact@v4
