@@ -48,3 +48,13 @@ The shipped **Casual** preset uses:
 - Older configs using `EMERGENCY_EXIT_KEY` migrate to `PANIC_KEY`.
 - Build output now includes `HUMANIZER.md` and a starter `midi` folder.
 - Virtual MIDI integration is intentionally not included until the separate add-on is tested.
+
+
+## QoL round 2
+
+- Added Humanizer preset duplication plus JSON preset export/import.
+- F4 Panic now has visible two-second feedback in the Playback panel in addition to the log.
+- Added always-visible speed and transpose readouts.
+- Added Reset Playback: returns to 0:00, speed 1.00x, transpose +0, and clears track mute/solo without changing Humanizer, Velocity, or Sustain mode.
+- Added recursive MIDI browser search across the entire `midi` folder and all subfolders.
+- Moved Reload out of an overlapping control position and added a dedicated playback status row.

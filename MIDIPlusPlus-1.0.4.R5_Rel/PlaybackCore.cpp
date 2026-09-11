@@ -23,6 +23,7 @@ typedef LONG(WINAPI* RtlGetVersionPtr)(PRTL_OSVERSIONINFOW);
 HANDLE VirtualPianoPlayer::command_event = nullptr;
 HANDLE VirtualPianoPlayer::waitable_timer = nullptr;
 double g_totalSongSeconds = 0.0;
+std::atomic<unsigned long long> g_panicSerial{ 0 };
 
 
 struct KeySequence {
@@ -1884,6 +1885,30 @@ void VirtualPianoPlayer::seek_to(std::chrono::nanoseconds position) {
     signalPlayback();
 }
 
+void VirtualPianoPlayer::reset_playback_basics() {
+    // Reset only transport/playback basics. Humanizer, velocity configuration,
+    // sustain mode and sustain cutoff deliberately remain untouched.
+    if (!paused.load(std::memory_order_acquire))
+        toggle_play_pause();
+
+    release_all_keys();
+    current_speed = 1.0;
+    time_factor = inv_cpu_freq * 1e9 * current_speed;
+    currentTransposition = 0;
+
+    for (auto& muted : trackMuted)
+        if (muted) muted->store(false, std::memory_order_release);
+    for (auto& soloed : trackSoloed)
+        if (soloed) soloed->store(false, std::memory_order_release);
+
+    total_adjusted_time = std::chrono::nanoseconds::zero();
+    buffer_index.store(0, std::memory_order_release);
+    if (midiFileSelected.load(std::memory_order_acquire))
+        seek_to(std::chrono::nanoseconds::zero());
+
+    std::cout << "[PLAYBACK] Reset: 0:00, speed 1.00x, transpose +0, mute/solo cleared.\n";
+}
+
 void VirtualPianoPlayer::speed_up() {
     adjust_playback_speed(1.1);
 }
@@ -1970,6 +1995,7 @@ void VirtualPianoPlayer::panic() {
         total_adjusted_time += std::chrono::nanoseconds(elapsedNs);
     }
     release_all_keys();
+    g_panicSerial.fetch_add(1, std::memory_order_acq_rel);
     signalPlayback();
     std::cout << "[PANIC] Released all notes and paused playback. MIDI++ remains open.\n";
 }

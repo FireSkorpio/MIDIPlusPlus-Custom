@@ -52,6 +52,7 @@ extern VirtualPianoPlayer* g_player;
 // Global variables (definitions provided in CPP)
 extern double g_totalSongSeconds;
 extern int    g_sustainCutoff;
+extern std::atomic<unsigned long long> g_panicSerial;
 
 // =====================================================
 // Sustain Mode Enumeration
@@ -188,6 +189,7 @@ public:
     // Other operations
     void release_all_keys();
     void panic();
+    void reset_playback_basics();
     void calibrate_volume();
     void process_tracks(const MidiFile& midi_file);
 
