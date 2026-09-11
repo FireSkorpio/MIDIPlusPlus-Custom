@@ -1,0 +1,7 @@
+# Visual Studio / MSBuild generated output
+MIDIPlusPlus-1.0.4.R5_Rel/MIDI++/x64/
+MIDIPlusPlus-1.0.4.R5_Rel/x64/
+MIDIPlusPlus-1.0.4.R5_Rel/.vs/
+
+# Local packaging output
+dist/
