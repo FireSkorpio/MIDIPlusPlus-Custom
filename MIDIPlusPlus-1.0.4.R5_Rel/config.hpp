@@ -49,22 +49,29 @@ namespace midi {
         bool ENABLED = true;
 
         // Notes whose original Note On times fall inside this window are
-        // candidates for one physical hand/chord.  Two-note dyads count.
+        // candidates for one physical hand/chord. Two-note dyads count.
         int CHORD_DETECTION_WINDOW_MS = 3;
 
-        // Maximum total stagger across one hand.  Actual spreads scale down
-        // for 2/3/4-note chords and for very fast passages.
-        int CHORD_PRESS_MAX_SPREAD_MS = 12;
-        int CHORD_RELEASE_MAX_SPREAD_MS = 8;
+        // Total onset/release spread across one hand. The humanizer chooses a
+        // value inside these ranges, then constrains it to what the MIDI can
+        // physically support without moving a Note On earlier or a Note Off later.
+        int CHORD_PRESS_MIN_SPREAD_MS = 12;
+        int CHORD_PRESS_MAX_SPREAD_MS = 36;
+        int CHORD_RELEASE_MIN_SPREAD_MS = 8;
+        int CHORD_RELEASE_MAX_SPREAD_MS = 26;
 
         // Adjacent virtual fingers are occasionally allowed to land/lift at
         // the same timestamp, which avoids a mechanically perfect roll.
-        int SIMULTANEOUS_FINGER_CHANCE_PERCENT = 28;
+        int SIMULTANEOUS_FINGER_CHANCE_PERCENT = 10;
 
-        // Shorten a note slightly before the next note/group for the same
-        // inferred hand.  The next Note On itself is never delayed.
+        // Humanize ordinary note-to-note movement as well as chords. If the
+        // next same-hand gesture begins within this many milliseconds of the
+        // current note's original release, MIDI++ may create a small key-up gap
+        // by releasing the current note early. The next Note On is never delayed.
         bool SEQUENTIAL_ARTICULATION = true;
-        int SEQUENTIAL_MAX_GAP_MS = 10;
+        int SEQUENTIAL_TRIGGER_WINDOW_MS = 200;
+        int SEQUENTIAL_MIN_GAP_MS = 8;
+        int SEQUENTIAL_MAX_GAP_MS = 20;
 
         // false = deterministic humanization for repeatable playback.
         // true  = generate a different micro-performance each load/play.
