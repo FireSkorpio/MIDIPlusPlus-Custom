@@ -6,6 +6,7 @@ on:
       - feature/qol-update
     paths:
       - tools/apply_qol_update.py
+      - tools/apply_qol_update_v2.py
       - .github/workflows/qol-apply-build.yml
 
 permissions:
@@ -23,7 +24,7 @@ jobs:
           fetch-depth: 0
 
       - name: Apply QoL source patch
-        run: python tools/apply_qol_update.py
+        run: python tools/apply_qol_update_v2.py
 
       - name: Setup MSBuild
         uses: microsoft/setup-msbuild@v2
