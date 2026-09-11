@@ -6,29 +6,32 @@ This repository-ready update is based on MIDI++ v1.0.4.R5 and the previously tes
 
 - Main window title changed to **MIDI++ Custom Build**.
 - Added **Humanizer** button under Advanced.
-- Added in-app Humanizer settings popup with Apply & Save, Defaults, and Close.
-- Added **Help** popup with getting-started, controls, Humanizer, timing, and config-safety documentation.
-- Humanizer now exposes chord press/release minimum and maximum spreads.
+- Added in-app Humanizer settings popup and Help popup.
+- Humanizer exposes chord press/release minimum and maximum spreads.
 - Chord onset timing is normalized to a chosen target spread so configured minimums are actually visible when the MIDI has room.
 - Chord release timing keeps an original-release anchor while other simulated fingers lift early.
-- Sequential articulation now applies to ordinary notes as well as chord passages.
-- Added configurable `SEQUENTIAL_TRIGGER_WINDOW_MS` (default 200 ms).
-- Added sequential min/max gaps (default 8-20 ms).
-- All Humanizer millisecond controls and repeated-note gap accept 0-1000 ms.
-- Percent controls remain 0-100.
+- Sequential articulation applies to ordinary notes as well as chord passages.
+- All Humanizer millisecond controls and repeated-note gap accept 0-1000 ms; percent controls remain 0-100.
 - Out-of-range Humanizer values are clamped and reversed min/max pairs are normalized.
-- Config load errors no longer overwrite `config.json`; a backup and error file are created and defaults are used only for that launch.
+- Config load errors preserve the original config, create a backup/error file, and use defaults only for that launch.
 - Existing repeated-note early-release behavior remains enabled (default 15 ms).
 - Existing `RuntimeObject.lib` GitHub linker fix is preserved.
 
-## Tuned defaults
+## Humanizer skill presets
 
-- Chord press spread: 12-36 ms
-- Chord release spread: 8-26 ms
+- **Professional** - tight, polished timing with subtle variation.
+- **Intermediate** - controlled hobby-player timing with clearly visible finger separation.
+- **Casual** - looser, visible articulation based on the tested Roblox settings.
+
+The shipped **Casual** preset uses:
+
+- Chord detection window: 50 ms
+- Chord press spread: 32-78 ms
+- Chord release spread: 25-64 ms
 - Simultaneous finger chance: 10%
 - Sequential trigger: 200 ms
-- Sequential gap: 8-20 ms
-- Repeated-note gap: 15 ms
+- Sequential gap: 40-100 ms
+- Repeated-note gap remains a separate global setting: 15 ms
 
 ## QoL update
 
@@ -36,7 +39,12 @@ This repository-ready update is based on MIDI++ v1.0.4.R5 and the previously tes
 - Up to five saved custom Humanizer presets with rename/update/delete.
 - Automatic MIDI rebuild on preset changes and Apply.
 - Repeatable Humanizer performance seeds and New Performance.
-- F4 Panic / Release All Notes instead of closing MIDI++.
-- Seek bar, Reload Current MIDI, drag-and-drop loading, recent MIDI list, session opacity/folder memory, tooltips, and expanded MIDI details.
-- Portable config path handling and backward migration from EMERGENCY_EXIT_KEY to PANIC_KEY.
-- Virtual MIDI integration is intentionally not included.
+- F4 is now **Panic / Release All Notes** instead of closing MIDI++.
+- Added a seek bar and **Reload Current MIDI**.
+- Added drag-and-drop MIDI loading and a five-item Recent MIDI list.
+- MIDI++ remembers opacity and the last MIDI folder.
+- Added tooltips and expanded MIDI details.
+- Relative config paths now resolve beside `MIDI++.exe`.
+- Older configs using `EMERGENCY_EXIT_KEY` migrate to `PANIC_KEY`.
+- Build output now includes `HUMANIZER.md` and a starter `midi` folder.
+- Virtual MIDI integration is intentionally not included until the separate add-on is tested.
