@@ -22,10 +22,18 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Scan Git history for secrets
-        uses: gitleaks/gitleaks-action@v3
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Install Gitleaks
+        shell: bash
+        run: |
+          set -euo pipefail
+          go install github.com/gitleaks/gitleaks/v8@latest
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      - name: Scan all refs and Git history for secrets
+        shell: bash
+        run: |
+          set -euo pipefail
+          gitleaks git . --redact=100 --exit-code=1 --log-opts="--all"
 
   hygiene:
     name: Sensitive filename checks
