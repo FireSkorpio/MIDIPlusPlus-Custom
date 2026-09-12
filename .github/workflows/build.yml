@@ -9,7 +9,6 @@ on:
       - ".github/workflows/build.yml"
       - "tools/apply_startup_diagnostics.py"
       - "MIDIPlusPlus-1.0.4.R5_Rel/MIDIDeviceUI.cpp"
-      - "MIDIPlusPlus-1.0.4.R5_Rel/MIDI++.cpp"
 
 permissions:
   contents: write
