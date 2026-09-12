@@ -1,6 +1,5 @@
 #include "MIDIDeviceUI.hpp"
 #include <mmsystem.h>
-// MIDIDeviceUI.cpp modifications
 
 bool MIDIDeviceUI::TestDeviceAccess(UINT deviceIndex) {
     HMIDIIN hMidiIn;
@@ -14,46 +13,47 @@ bool MIDIDeviceUI::TestDeviceAccess(UINT deviceIndex) {
 
 void MIDIDeviceUI::PopulateMidiInDevices(HWND combo, int& selectedDevice) {
     SendMessage(combo, CB_RESETCONTENT, 0, 0);
-    UINT numDevs = midiInGetNumDevs();
 
-    bool foundValidDevice = false;
-    int validDeviceCount = 0;
+    // Startup must stay non-blocking. The old implementation called
+    // midiInOpen() on every device just to test accessibility. A stale or
+    // unresponsive Windows MIDI endpoint can block inside midiInOpen(), which
+    // freezes WM_CREATE and leaves MIDI++ stuck on the startup splash.
+    //
+    // Enumerate device names only here. Actual access is deferred until the
+    // user enables Midi2Key/MidiConnect and MIDI++ opens the selected device.
+    const UINT numDevs = midiInGetNumDevs();
+    int addedCount = 0;
 
-    for (UINT i = 0; i < numDevs; i++) {
+    for (UINT i = 0; i < numDevs; ++i) {
         MIDIINCAPS mic{};
         if (midiInGetDevCaps(i, &mic, sizeof(mic)) == MMSYSERR_NOERROR) {
-            if (TestDeviceAccess(i)) {
-                SendMessageW(combo, CB_ADDSTRING, 0, (LPARAM)mic.szPname);
-                validDeviceCount++;
-
-                if (i == selectedDevice) {
-                    foundValidDevice = true;
-                    SendMessage(combo, CB_SETCURSEL, validDeviceCount - 1, 0);
-                }
-            }
+            SendMessageW(combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(mic.szPname));
+            ++addedCount;
         }
     }
 
-    if (validDeviceCount > 0) {
-        if (!foundValidDevice) {
-            SendMessage(combo, CB_SETCURSEL, 0, 0);
+    if (addedCount > 0) {
+        // No filtering is performed, so combo indices remain aligned with the
+        // WinMM device indices used by the rest of MIDI++.
+        if (selectedDevice < 0 || selectedDevice >= addedCount)
             selectedDevice = 0;
-        }
+        SendMessage(combo, CB_SETCURSEL, selectedDevice, 0);
     }
     else {
-        SendMessageW(combo, CB_ADDSTRING, 0, (LPARAM)L"No Devices");
+        SendMessageW(combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"No Devices"));
         SendMessage(combo, CB_SETCURSEL, 0, 0);
         selectedDevice = -1;
     }
 }
+
 void MIDIDeviceUI::PopulateChannelList(HWND combo, int& selectedChannel) {
     SendMessage(combo, CB_RESETCONTENT, 0, 0);
-    SendMessageW(combo, CB_ADDSTRING, 0, (LPARAM)L"All Channels");
+    SendMessageW(combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"All Channels"));
 
     for (int ch = 0; ch < 16; ch++) {
         wchar_t buf[32];
         swprintf_s(buf, L"Channel %d", ch);
-        SendMessageW(combo, CB_ADDSTRING, 0, (LPARAM)buf);
+        SendMessageW(combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(buf));
     }
 
     SendMessage(combo, CB_SETCURSEL, 0, 0);
