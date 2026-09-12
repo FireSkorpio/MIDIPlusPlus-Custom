@@ -19,29 +19,6 @@ jobs:
       - name: Checkout source
         uses: actions/checkout@v4
 
-      - name: Make direct MidiConnect patch robust
-        shell: powershell
-        run: |
-          $path = "tools/apply_direct_midiconnect.py"
-          $text = [System.IO.File]::ReadAllText($path)
-
-          $oldRead = 'return path.read_bytes().decode("utf-8-sig")'
-          $newRead = 'return path.read_bytes().decode("utf-8-sig").replace("\r\n", "\n").replace("\r", "\n")'
-          if ($text.Contains($oldRead)) {
-            $text = $text.Replace($oldRead, $newRead)
-          }
-
-          $oldProcessCall = 'replace_once(cpp, old_process, new_process)'
-          $newProcessCall = 'replace_once(cpp, old_process.rstrip("\n"), new_process.rstrip("\n"))'
-          if ($text.Contains($oldProcessCall)) {
-            $text = $text.Replace($oldProcessCall, $newProcessCall)
-          }
-
-          [System.IO.File]::WriteAllText($path, $text, [System.Text.UTF8Encoding]::new($false))
-
-      - name: Apply Humanizer 2.0 direct MidiConnect update
-        run: python tools/apply_direct_midiconnect.py
-
       - name: Apply startup splash and diagnostics
         run: python tools/apply_startup_diagnostics.py
 
@@ -56,10 +33,7 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add "MIDIPlusPlus-1.0.4.R5_Rel/MIDIConnect.hpp" `
-                  "MIDIPlusPlus-1.0.4.R5_Rel/MIDIConnect.cpp" `
-                  "MIDIPlusPlus-1.0.4.R5_Rel/PlaybackCore.cpp" `
-                  "MIDIPlusPlus-1.0.4.R5_Rel/MIDI++.cpp" `
+          git add "MIDIPlusPlus-1.0.4.R5_Rel/MIDI++.cpp" `
                   "UPDATE_NOTES.md"
           if (-not (git diff --cached --quiet)) {
             git commit -m "Add startup diagnostics to Humanizer 2.0"
