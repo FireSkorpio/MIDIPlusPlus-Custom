@@ -47,6 +47,9 @@ jobs:
           if (Test-Path "README.md") {
             Copy-Item "README.md" "dist\README.md"
           }
+          if (Test-Path "NOTICE.md") {
+            Copy-Item "NOTICE.md" "dist\NOTICE.md"
+          }
           if (Test-Path "LICENSE") {
             Copy-Item "LICENSE" "dist\LICENSE"
           }
