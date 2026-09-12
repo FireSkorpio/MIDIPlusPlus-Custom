@@ -28,6 +28,18 @@ The complete MIT license text is included at `LICENSES/nlohmann-json-MIT.txt`. T
 
 Project: https://github.com/nlohmann/json
 
+## dp::thread-pool
+
+The vendored `thread_pool.h` / `thread_safe_queue.h` code is derived from the `dp::thread-pool` project by Paul Tsouchlos (formerly published under the DeveloperPaul123 GitHub account).
+
+License: MIT
+
+Copyright: 2021-2023 Paul Tsouchlos
+
+The complete MIT license text is included at `LICENSES/dp-thread-pool-MIT.txt`.
+
+Project: https://github.com/ptsouchlos/thread-pool
+
 ## Microsoft / Windows platform components
 
 MIDI++ uses Microsoft Windows platform APIs and toolchain components, including Win32, Windows multimedia/MIDI APIs, C++/WinRT interfaces, GDI+, Common Controls, and libraries supplied by the Windows SDK / Visual C++ toolchain. These are platform/build dependencies and are governed by Microsoft's applicable license terms; they are not relicensed by this repository's GPL license.
@@ -38,6 +50,6 @@ Some documentation and image links retained in `MIDIPlusPlus-1.0.4.R5_Rel/README
 
 ## Notes for distributors
 
-If you redistribute binaries of this modified GPL-covered program, make the corresponding source code and GPL license terms available as required by the GPL. Preserve applicable third-party copyright and license notices, including the nlohmann/json MIT notice.
+If you redistribute binaries of this modified GPL-covered program, make the corresponding source code and GPL license terms available as required by the GPL. Preserve applicable third-party copyright and license notices, including the nlohmann/json and dp::thread-pool MIT notices.
 
 This file is an attribution/notice summary and is not legal advice. The actual license texts control.
