@@ -47,8 +47,7 @@ The shipped **Casual** preset uses:
 - Relative config paths now resolve beside `MIDI++.exe`.
 - Older configs using `EMERGENCY_EXIT_KEY` migrate to `PANIC_KEY`.
 - Build output now includes `HUMANIZER.md` and a starter `midi` folder.
-- Virtual MIDI integration is intentionally not included until the separate add-on is tested.
-
+- Virtual MIDI integration is intentionally kept separate from the main application.
 
 ## QoL round 2
 
@@ -59,7 +58,6 @@ The shipped **Casual** preset uses:
 - Added recursive MIDI browser search across the entire `midi` folder and all subfolders.
 - Moved Reload out of an overlapping control position and added a dedicated playback status row.
 
-
 ## Humanizer 2.0 branch
 
 - Better hand inference tracks named bass/treble or left/right piano tracks plus recent hand position.
@@ -67,28 +65,29 @@ The shipped **Casual** preset uses:
 - Optional config-only tempo-aware Humanizer, disabled by default.
 - Optional config-only melody-priority timing, disabled by default.
 - Optional config-only velocity Humanizer with BALANCED, MELODY_FOCUS, and CHORD_FOCUS modes, disabled by default.
-- Humanizer 2.0 remains isolated from `main`; `main` receives only the separately validated QoL changes.
+- Humanizer 2.0 remains isolated from `main`; `main` receives only separately validated changes.
 
 ## Direct MidiConnect playback (Humanizer 2.0 test branch)
 
-- The existing **MidiConnect** toggle can now send loaded MIDI playback directly to Visual Pianos using its four-key base-12 protocol; no external MidiConnect program or virtual MIDI port is required.
+- The existing **MidiConnect** toggle now sends loaded MIDI playback directly to Visual Pianos using its four-key base-12 protocol; no external MidiConnect program or virtual MIDI port is required.
 - Direct output happens after Humanizer 2.0, playability filtering, repeated-note handling, track mute/solo, speed and seeking, so those scheduler features are preserved.
 - Note velocity is sent through the MidiConnect protocol (note-off uses velocity 0), and sustain is sent with the existing control-143 encoding.
 - Panic/stop/reset explicitly sends note-off messages for protocol notes still active plus sustain-off to reduce stuck notes.
-- Existing physical MIDI input through the MidiConnect button remains available.
+- MidiConnect is treated as a playback output mode, not as physical MIDI input, so Play/Pause, Restart, Skip/Rewind, and Speed controls remain available while it is enabled.
+- Enabling MidiConnect no longer opens a Windows MIDI input endpoint.
 
 ## Startup diagnostics (Humanizer 2.0 test branch)
 
-- MIDI++ now shows a small startup window immediately so a slow launch no longer looks like nothing happened.
-- The startup window reports the current stage, including graphics, playback/config initialization, resources, and interface/MIDI-device enumeration.
+- MIDI++ shows a small startup window immediately so a slow launch no longer looks like nothing happened.
+- The startup window reports graphics, playback/config initialization, resource loading, and interface construction.
 - Startup exceptions are caught and shown in a message box instead of terminating silently.
 - Startup failures are also written to `startup_error.txt` beside `MIDI++.exe` for easy troubleshooting.
-- If the single-instance mutex exists but the previous MIDI++ window cannot be found, MIDI++ now explains that another background instance may still be running.
+- If the single-instance mutex exists but the previous MIDI++ window cannot be found, MIDI++ explains that another background instance may still be running.
 
-## Startup MIDI isolation / direct MidiConnect test
+## Standalone startup / physical MIDI isolation
 
-- Physical MIDI device enumeration no longer runs during `WM_CREATE`; the device list is populated only when **Refresh MIDI** is pressed.
-- The built-in **MidiConnect** toggle is now a loaded-MIDI playback output mode and no longer opens a Windows MIDI input endpoint.
-- Autoplay controls remain available while MidiConnect output is enabled.
+- Windows MIDI device enumeration no longer runs during `WM_CREATE`; MIDI++ can start without touching the Windows MIDI device stack.
+- The physical MIDI device list remains optional and is populated only when **Refresh MIDI** is explicitly pressed.
+- **Midi2Key** remains the physical-MIDI-input feature.
+- **MidiConnect** is the standalone loaded-MIDI output path for Visual Pianos and does not depend on Windows MIDI Services or the virtual MIDI add-on.
 - Velocity-curve and physical-device selection changes no longer reopen MidiConnect as a MIDI input device.
-
