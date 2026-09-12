@@ -5,13 +5,6 @@ on:
   push:
     branches:
       - feature/humanizer-2.0
-    paths:
-      - ".github/workflows/build.yml"
-      - "tools/apply_startup_diagnostics.py"
-      - "MIDIPlusPlus-1.0.4.R5_Rel/MIDIDeviceUI.cpp"
-
-permissions:
-  contents: write
 
 jobs:
   build:
@@ -21,26 +14,11 @@ jobs:
       - name: Checkout source
         uses: actions/checkout@v4
 
-      - name: Apply startup/MidiConnect isolation patch
-        run: python tools/apply_startup_diagnostics.py
-
       - name: Setup MSBuild
         uses: microsoft/setup-msbuild@v2
 
       - name: Build MIDI++ Release x64
         run: msbuild "MIDIPlusPlus-1.0.4.R5_Rel\MIDI++.sln" /m /p:Configuration=Release /p:Platform=x64
-
-      - name: Commit validated Humanizer 2.0 source
-        shell: powershell
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add "MIDIPlusPlus-1.0.4.R5_Rel/MIDI++.cpp" `
-                  "UPDATE_NOTES.md"
-          if (-not (git diff --cached --quiet)) {
-            git commit -m "Defer startup MIDI scan and finalize direct MidiConnect output"
-            git push origin HEAD:feature/humanizer-2.0
-          }
 
       - name: Prepare finished package
         shell: powershell
@@ -76,6 +54,6 @@ jobs:
       - name: Upload finished MIDI++
         uses: actions/upload-artifact@v4
         with:
-          name: MIDIPlusPlus-Humanizer2-DirectMidiConnect-Test
+          name: MIDIPlusPlus-Humanizer2-Standalone-DirectMidiConnect-Test
           path: dist
           if-no-files-found: error
