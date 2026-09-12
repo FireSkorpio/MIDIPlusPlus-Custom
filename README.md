@@ -2,7 +2,9 @@
 
 A customized Windows build of [MIDI++](https://github.com/Zephkek/MIDIPlusPlus) focused on virtual-piano playback, Humanizer improvements, quality-of-life features, and direct Visual Pianos MidiConnect output.
 
-This repository is based on MIDI++ v1.0.4 R5 and remains licensed under the GNU GPL v3. See [LICENSE](LICENSE) and [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+> **Upstream attribution:** This is **not the original MIDI++ project**. The original MIDI++ codebase was created by **Zephkek** and contributors. This repository is a revision/custom build based on MIDI++ v1.0.4 R5 and maintained by **FireSkorpio**. FireSkorpio does not claim authorship of the original MIDI++ codebase. See [NOTICE.md](NOTICE.md) for the attribution notice.
+
+This modified build remains licensed under the GNU GPL v3. See [LICENSE](LICENSE), [NOTICE.md](NOTICE.md), and [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
 ## What this build adds
 
@@ -22,7 +24,7 @@ This repository is based on MIDI++ v1.0.4 R5 and remains licensed under the GNU 
 - Roblox/your target virtual piano if you are using the autoplay or MidiConnect features.
 - A physical MIDI keyboard is optional and is only needed for live MIDI input features.
 
-MIDI++ is currently a Windows application. See **macOS support** below for the current porting status.
+MIDI++ is currently a Windows application. Experimental macOS work is kept on the separate `feature/macos-port` branch and is not part of the Windows release.
 
 ## Download
 
@@ -52,6 +54,8 @@ Keep these files together:
 MIDI++.exe
 config.json
 HUMANIZER.md
+README.md
+NOTICE.md
 LICENSE
 THIRD_PARTY_NOTICES.md
 LICENSES\
@@ -135,6 +139,7 @@ Important files:
 - `config.json` — playback, Humanizer, UI, mappings, and advanced options.
 - `HUMANIZER.md` — Humanizer settings reference.
 - `UPDATE_NOTES.md` — development/update history in the source repository.
+- `NOTICE.md` — explicit upstream authorship and revision notice.
 - `startup_error.txt` — created beside the executable if a caught startup error occurs.
 
 ## Troubleshooting
@@ -150,7 +155,7 @@ If MIDI++ does not start or behaves unexpectedly:
 
 ## Building from source
 
-The current project is a Visual Studio C++/Win32 solution.
+The current Windows project is a Visual Studio C++/Win32 solution.
 
 Typical Release build:
 
@@ -162,16 +167,9 @@ The GitHub Actions workflow performs the same Release x64 build automatically.
 
 ## macOS support
 
-There is no native macOS build yet. The MIDI parser, scheduler, Humanizer, Playability logic, configuration logic, and much of the playback state machine are portable C++, but the current application also relies heavily on Windows-specific components including Win32 UI, GDI+/Common Controls, C++/WinRT MIDI APIs, Windows scan codes, and the Windows input-injection path.
+There is no production macOS build yet. Experimental porting work is isolated on `feature/macos-port`.
 
-A macOS port would therefore require a platform layer for at least:
-
-- UI/windowing.
-- Keyboard/input injection, likely through macOS accessibility/event APIs.
-- Live MIDI-device access, likely through CoreMIDI.
-- Focus/window handling and platform-specific packaging.
-
-The core playback/Humanizer logic should be reusable rather than rewritten.
+The MIDI parser, scheduler, Humanizer, Playability logic, configuration logic, and much of the playback state machine are portable C++, but the Windows application also relies on Win32 UI, GDI+/Common Controls, C++/WinRT MIDI APIs, Windows scan codes, and Windows input injection. The macOS work is replacing those platform-specific layers while reusing the portable playback logic.
 
 ## Support / contact
 
@@ -179,14 +177,16 @@ For bugs, installation problems, feature requests, or compatibility reports, ope
 
 https://github.com/FireSkorpio/MIDIPlusPlus-Custom/issues
 
-Maintainer: **FireSkorpio** on GitHub.
+Maintainer of this revision: **FireSkorpio** on GitHub.
 
 Please include enough information to reproduce the problem. For crashes or startup failures, attach the relevant log/error text but remove any personal paths or information you do not want to share publicly.
 
-## License
+## License and attribution
+
+The original MIDI++ project is by **Zephkek and contributors**. This repository is a modified/revision build and is not presented as original authorship by FireSkorpio.
 
 MIDI++ and this modified build are distributed under the **GNU General Public License version 3**. See [LICENSE](LICENSE).
 
-This repository includes third-party code under compatible licenses. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) and the [LICENSES](LICENSES) directory.
+This repository includes third-party code under compatible licenses. See [NOTICE.md](NOTICE.md), [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md), and the [LICENSES](LICENSES) directory.
 
 Upstream project: https://github.com/Zephkek/MIDIPlusPlus
