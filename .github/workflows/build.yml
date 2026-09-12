@@ -14,6 +14,19 @@ jobs:
       - name: Checkout source
         uses: actions/checkout@v4
 
+      - name: Make direct MidiConnect patch newline-safe
+        shell: powershell
+        run: |
+          $path = "tools/apply_direct_midiconnect.py"
+          $text = [System.IO.File]::ReadAllText($path)
+          $old = 'return path.read_bytes().decode("utf-8-sig")'
+          $new = 'return path.read_bytes().decode("utf-8-sig").replace("\r\n", "\n").replace("\r", "\n")'
+          if (-not $text.Contains($old)) {
+            throw "Could not find patch-script newline handler."
+          }
+          $text = $text.Replace($old, $new)
+          [System.IO.File]::WriteAllText($path, $text, [System.Text.UTF8Encoding]::new($false))
+
       - name: Apply Humanizer 2.0 direct MidiConnect update
         run: python tools/apply_direct_midiconnect.py
 
