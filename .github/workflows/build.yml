@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
   push:
     branches:
-      - feature/humanizer-2.0
+      - main
 
 jobs:
   build:
@@ -44,6 +44,19 @@ jobs:
             Copy-Item "$src\HUMANIZER.md" "dist\HUMANIZER.md"
           }
 
+          if (Test-Path "README.md") {
+            Copy-Item "README.md" "dist\README.md"
+          }
+          if (Test-Path "LICENSE") {
+            Copy-Item "LICENSE" "dist\LICENSE"
+          }
+          if (Test-Path "THIRD_PARTY_NOTICES.md") {
+            Copy-Item "THIRD_PARTY_NOTICES.md" "dist\THIRD_PARTY_NOTICES.md"
+          }
+          if (Test-Path "LICENSES") {
+            Copy-Item "LICENSES" "dist\LICENSES" -Recurse
+          }
+
           New-Item -ItemType Directory -Force -Path "dist\midi" | Out-Null
           "Place .mid/.midi files here, or drag MIDI files directly onto MIDI++." |
             Set-Content "dist\midi\README.txt"
@@ -54,6 +67,6 @@ jobs:
       - name: Upload finished MIDI++
         uses: actions/upload-artifact@v4
         with:
-          name: MIDIPlusPlus-Humanizer2-Standalone-DirectMidiConnect-Test
+          name: MIDIPlusPlus-Custom-Build
           path: dist
           if-no-files-found: error
