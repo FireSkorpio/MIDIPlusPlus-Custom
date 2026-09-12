@@ -1,4 +1,5 @@
 #include "PlaybackSystem.hpp"
+#include "MIDIConnect.hpp"
 #include "InputHeader.h"
 #include "timer.h" 
 #include <cmath>
@@ -1546,6 +1547,9 @@ void VirtualPianoPlayer::toggleSustainMode() {
 }
 
 void VirtualPianoPlayer::release_all_keys() {
+    // MidiConnect messages are taps, not held numpad keys, so explicitly
+    // emit note-off messages for any protocol notes still considered down.
+    MidiConnectReleasePlaybackNotes();
     if (isSustainPressed) {
         releaseKey(sustain_key_code);
         isSustainPressed = false;
@@ -2295,6 +2299,25 @@ void VirtualPianoPlayer::initializeKeyCache() {
 void VirtualPianoPlayer::execute_note_event(const NoteEvent& event) noexcept {
     if (!isTrackEnabled(event.trackIndex))
         return;
+
+    // Direct Visual Pianos MidiConnect output. The event has already passed
+    // through MIDI parsing, Humanizer 2.0, playability filtering and the
+    // repeated-note scheduler, so this only replaces the final QWERTY output.
+    if (MidiConnectPlaybackOutputActive()) {
+        if (event.isSustain) {
+            MidiConnectSendPlaybackSustain(std::clamp(event.sustainValue, 0, 127));
+        }
+        else {
+            const int midiNote = note_name_to_midi(event.note);
+            if (midiNote >= 0 && midiNote <= 127) {
+                const int velocity = (event.action == EventType::Press)
+                    ? std::clamp(event.velocity, 1, 127)
+                    : 0;
+                MidiConnectSendPlaybackNote(midiNote, velocity);
+            }
+        }
+        return;
+    }
 
     if (!event.isSustain) {
         if (event.action == EventType::Press) {

@@ -29,6 +29,8 @@ public:
 
     void SetActive(bool active);
     void ReleaseAllNumpadKeys();
+    void SendNote(int midiNote, int velocity) noexcept;
+    void SendSustain(int value) noexcept;
 
 private:
     void ProcessMidiMessage(IMidiMessage const& midiMessage);
@@ -60,3 +62,12 @@ private:
     // Precomputed mapping for sustain events: for every possible sustain value (data2)
     std::array<std::array<INPUT, 10>, 128> m_sustainMapping;
 };
+
+// Loaded-MIDI playback bridge. When the MIDI++ MidiConnect toggle is active,
+// PlaybackCore routes its already-scheduled/humanized MIDI events through the
+// same Visual Pianos protocol used by live MIDI input.
+bool MidiConnectPlaybackOutputActive() noexcept;
+void MidiConnectSendPlaybackNote(int midiNote, int velocity) noexcept;
+void MidiConnectSendPlaybackSustain(int value) noexcept;
+void MidiConnectReleasePlaybackNotes() noexcept;
+

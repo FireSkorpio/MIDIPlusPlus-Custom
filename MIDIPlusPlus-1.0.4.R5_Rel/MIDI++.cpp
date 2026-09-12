@@ -2177,7 +2177,7 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
         AddToolTip(hWnd, ID_BTN_TRANSPOSEOUT, L"Transpose notes that would otherwise fall outside the selected keyboard range.");
         AddToolTip(hWnd, ID_BTN_PLAYABILITY, L"Optional virtual-piano optimizer. Limits simultaneous physical attacks to 5 notes per hand and 10 total while preserving bass, top voice, velocity, and likely melody importance.");
         AddToolTip(hWnd, ID_BTN_MIDI2QWERTY, L"Use a physical MIDI input device to send QWERTY piano keys.");
-        AddToolTip(hWnd, ID_BTN_MIDICONNECT, L"Alternate live MIDI input mode using the specialized key injector.");
+        AddToolTip(hWnd, ID_BTN_MIDICONNECT, L"Send loaded MIDI (and optional live MIDI input) directly through the Visual Pianos MidiConnect protocol.");
         AddToolTip(hWnd, ID_SLIDER_SEEK, L"Drag to seek directly through the loaded song.");
         SetTimer(hWnd, IDT_TIMELEFT_TIMER, 200, nullptr);
         g_guiReady.store(true);

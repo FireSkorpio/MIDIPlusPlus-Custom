@@ -68,3 +68,12 @@ The shipped **Casual** preset uses:
 - Optional config-only melody-priority timing, disabled by default.
 - Optional config-only velocity Humanizer with BALANCED, MELODY_FOCUS, and CHORD_FOCUS modes, disabled by default.
 - Humanizer 2.0 remains isolated from `main`; `main` receives only the separately validated QoL changes.
+
+## Direct MidiConnect playback (Humanizer 2.0 test branch)
+
+- The existing **MidiConnect** toggle can now send loaded MIDI playback directly to Visual Pianos using its four-key base-12 protocol; no external MidiConnect program or virtual MIDI port is required.
+- Direct output happens after Humanizer 2.0, playability filtering, repeated-note handling, track mute/solo, speed and seeking, so those scheduler features are preserved.
+- Note velocity is sent through the MidiConnect protocol (note-off uses velocity 0), and sustain is sent with the existing control-143 encoding.
+- Panic/stop/reset explicitly sends note-off messages for protocol notes still active plus sustain-off to reduce stuck notes.
+- Existing physical MIDI input through the MidiConnect button remains available.
+

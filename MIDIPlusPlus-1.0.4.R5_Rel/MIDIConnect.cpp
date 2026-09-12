@@ -1,13 +1,18 @@
-﻿#include "MIDIConnect.hpp"
+#include "MIDIConnect.hpp"
 #include "InputHeader.h"
 #include <windows.h>
 #include <iostream>
+#include <mutex>
 #include <winrt/Windows.Devices.Midi.h>
 #include <winrt/Windows.Devices.Enumeration.h>
 #include <winrt/Windows.Foundation.h>
 #include <winrt/Windows.Foundation.Collections.h>
 #include <winrt/Windows.Storage.Streams.h>
 namespace {
+    std::atomic<MIDIConnect*> g_activeMidiConnect{ nullptr };
+    std::mutex g_midiConnectStateMutex;
+    std::array<bool, 128> g_midiConnectNotesDown{};
+
     static const uint8_t div12[128] = {
         0,0,0,0,0,0,0,0,0,0,0,0,
         1,1,1,1,1,1,1,1,1,1,1,1,
@@ -169,6 +174,7 @@ MIDIConnect::MIDIConnect()
 }
 
 MIDIConnect::~MIDIConnect() {
+    SetActive(false);
     CloseDevice();
 }
 
@@ -220,7 +226,21 @@ void MIDIConnect::CloseDevice() {
 }
 
 void MIDIConnect::SetActive(bool active) {
+    const bool wasActive = m_isActive.load(std::memory_order_acquire);
+    if (!active && wasActive)
+        MidiConnectReleasePlaybackNotes();
+
     m_isActive.store(active, std::memory_order_release);
+
+    if (active) {
+        g_activeMidiConnect.store(this, std::memory_order_release);
+    }
+    else {
+        MIDIConnect* expected = this;
+        g_activeMidiConnect.compare_exchange_strong(
+            expected, nullptr, std::memory_order_acq_rel, std::memory_order_acquire);
+    }
+
     if (active && SyscallNumber == 0) {
         try {
             SyscallNumber = GetNtUserSendInputSyscallNumber();
@@ -250,6 +270,29 @@ void MIDIConnect::ReleaseAllNumpadKeys() {
     NtUserSendInputCall(12, inputs, sizeof(INPUT));
 }
 
+void MIDIConnect::SendNote(int midiNote, int velocity) noexcept {
+    if (!m_isActive.load(std::memory_order_acquire))
+        return;
+    if (midiNote < 0 || midiNote > 127)
+        return;
+
+    velocity = std::clamp(velocity, 0, 127);
+    const auto& mapping = m_noteMapping[static_cast<size_t>(midiNote)][static_cast<size_t>(velocity)];
+    NtUserSendInputCall(10, const_cast<INPUT*>(mapping.data()), sizeof(INPUT));
+
+    std::lock_guard<std::mutex> lock(g_midiConnectStateMutex);
+    g_midiConnectNotesDown[static_cast<size_t>(midiNote)] = (velocity > 0);
+}
+
+void MIDIConnect::SendSustain(int value) noexcept {
+    if (!m_isActive.load(std::memory_order_acquire))
+        return;
+
+    value = std::clamp(value, 0, 127);
+    const auto& mapping = m_sustainMapping[static_cast<size_t>(value)];
+    NtUserSendInputCall(10, const_cast<INPUT*>(mapping.data()), sizeof(INPUT));
+}
+
 void MIDIConnect::ProcessMidiMessage(IMidiMessage const& midiMessage) {
     if (!m_isActive.load(std::memory_order_acquire)) return;
 
@@ -263,12 +306,46 @@ void MIDIConnect::ProcessMidiMessage(IMidiMessage const& midiMessage) {
     uint8_t data2 = bytes[2];
 
     if (cmd == 0x90 || cmd == 0x80) {
-        const BYTE velocity = (cmd == 0x90) ? data2 : 0;
-        const auto& mapping = m_noteMapping[data1][velocity];
-        NtUserSendInputCall(10, const_cast<INPUT*>(mapping.data()), sizeof(INPUT));
+        const int velocity = (cmd == 0x90) ? data2 : 0;
+        SendNote(data1, velocity);
     }
     else if (cmd == 0xB0 && data1 == 64) {
-        const auto& mapping = m_sustainMapping[data2];
-        NtUserSendInputCall(10, const_cast<INPUT*>(mapping.data()), sizeof(INPUT));
+        SendSustain(data2);
     }
+}
+
+bool MidiConnectPlaybackOutputActive() noexcept {
+    MIDIConnect* output = g_activeMidiConnect.load(std::memory_order_acquire);
+    return output && output->IsActive();
+}
+
+void MidiConnectSendPlaybackNote(int midiNote, int velocity) noexcept {
+    MIDIConnect* output = g_activeMidiConnect.load(std::memory_order_acquire);
+    if (output && output->IsActive())
+        output->SendNote(midiNote, velocity);
+}
+
+void MidiConnectSendPlaybackSustain(int value) noexcept {
+    MIDIConnect* output = g_activeMidiConnect.load(std::memory_order_acquire);
+    if (output && output->IsActive())
+        output->SendSustain(value);
+}
+
+void MidiConnectReleasePlaybackNotes() noexcept {
+    MIDIConnect* output = g_activeMidiConnect.load(std::memory_order_acquire);
+    if (!output || !output->IsActive())
+        return;
+
+    std::array<bool, 128> notesToRelease{};
+    {
+        std::lock_guard<std::mutex> lock(g_midiConnectStateMutex);
+        notesToRelease = g_midiConnectNotesDown;
+        g_midiConnectNotesDown.fill(false);
+    }
+
+    for (int note = 0; note < 128; ++note) {
+        if (notesToRelease[static_cast<size_t>(note)])
+            output->SendNote(note, 0);
+    }
+    output->SendSustain(0);
 }
