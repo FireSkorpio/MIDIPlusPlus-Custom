@@ -2,6 +2,11 @@ name: Build MIDI++ Custom Build
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - feature/humanizer-2.0
+    paths:
+      - ".github/workflows/build.yml"
 
 permissions:
   contents: write
@@ -14,17 +19,24 @@ jobs:
       - name: Checkout source
         uses: actions/checkout@v4
 
-      - name: Make direct MidiConnect patch newline-safe
+      - name: Make direct MidiConnect patch robust
         shell: powershell
         run: |
           $path = "tools/apply_direct_midiconnect.py"
           $text = [System.IO.File]::ReadAllText($path)
-          $old = 'return path.read_bytes().decode("utf-8-sig")'
-          $new = 'return path.read_bytes().decode("utf-8-sig").replace("\r\n", "\n").replace("\r", "\n")'
-          if (-not $text.Contains($old)) {
-            throw "Could not find patch-script newline handler."
+
+          $oldRead = 'return path.read_bytes().decode("utf-8-sig")'
+          $newRead = 'return path.read_bytes().decode("utf-8-sig").replace("\r\n", "\n").replace("\r", "\n")'
+          if ($text.Contains($oldRead)) {
+            $text = $text.Replace($oldRead, $newRead)
           }
-          $text = $text.Replace($old, $new)
+
+          $oldProcessCall = 'replace_once(cpp, old_process, new_process)'
+          $newProcessCall = 'replace_once(cpp, old_process.rstrip("\n"), new_process.rstrip("\n"))'
+          if ($text.Contains($oldProcessCall)) {
+            $text = $text.Replace($oldProcessCall, $newProcessCall)
+          }
+
           [System.IO.File]::WriteAllText($path, $text, [System.Text.UTF8Encoding]::new($false))
 
       - name: Apply Humanizer 2.0 direct MidiConnect update
