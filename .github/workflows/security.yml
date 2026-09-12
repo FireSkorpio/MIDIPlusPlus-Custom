@@ -1,0 +1,61 @@
+name: Security - Secret Scan
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  gitleaks:
+    name: Gitleaks full-history scan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout complete repository history
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Scan Git history for secrets
+        uses: gitleaks/gitleaks-action@v3
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  hygiene:
+    name: Sensitive filename checks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout complete repository history
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Check Git history for sensitive-looking filenames
+        shell: bash
+        run: |
+          set -euo pipefail
+          matches="$(git rev-list --objects --all | awk '{$1=""; sub(/^ /,""); print}' | grep -Eai '(^|/)(\.env($|\.)|id_rsa$|id_ed25519$|.*\.(pem|p12|pfx|key)$|credentials?($|\.)|secrets?($|\.)|api[-_]?keys?($|\.)|tokens?($|\.))' || true)"
+          if [ -n "$matches" ]; then
+            echo "Sensitive-looking filenames were found in Git history:"
+            printf '%s\n' "$matches"
+            exit 1
+          fi
+          echo "No sensitive-looking filenames found in Git history."
+
+      - name: Check currently tracked files for credential artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          bad="$(git ls-files | grep -Eai '(^|/)(\.env($|\.)|id_rsa$|id_ed25519$|.*\.(pem|p12|pfx|key)$|credentials?($|\.)|secrets?($|\.))' || true)"
+          if [ -n "$bad" ]; then
+            echo "Potentially sensitive tracked files:"
+            printf '%s\n' "$bad"
+            exit 1
+          fi
+          echo "No common private credential files are tracked."
