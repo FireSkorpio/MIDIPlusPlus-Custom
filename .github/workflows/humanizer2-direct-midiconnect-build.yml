@@ -1,0 +1,79 @@
+name: Build Humanizer 2.0 Direct MidiConnect
+
+on:
+  push:
+    branches:
+      - feature/humanizer-2.0
+    paths:
+      - tools/apply_direct_midiconnect.py
+      - .github/workflows/humanizer2-direct-midiconnect-build.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  patch-build:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout Humanizer 2.0
+        uses: actions/checkout@v4
+        with:
+          ref: feature/humanizer-2.0
+
+      - name: Apply direct MidiConnect playback patch
+        run: python tools/apply_direct_midiconnect.py
+
+      - name: Setup MSBuild
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Build MIDI++ Release x64
+        run: msbuild "MIDIPlusPlus-1.0.4.R5_Rel\MIDI++.sln" /m /p:Configuration=Release /p:Platform=x64
+
+      - name: Commit validated source changes
+        shell: powershell
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "MIDIPlusPlus-1.0.4.R5_Rel/MIDIConnect.hpp" `
+                  "MIDIPlusPlus-1.0.4.R5_Rel/MIDIConnect.cpp" `
+                  "MIDIPlusPlus-1.0.4.R5_Rel/PlaybackCore.cpp" `
+                  "MIDIPlusPlus-1.0.4.R5_Rel/MIDI++.cpp" `
+                  "UPDATE_NOTES.md"
+          if (-not (git diff --cached --quiet)) {
+            git commit -m "Add direct MidiConnect playback to Humanizer 2.0"
+            git push origin HEAD:feature/humanizer-2.0
+          }
+
+      - name: Prepare Humanizer 2.0 test package
+        shell: powershell
+        run: |
+          $src = "MIDIPlusPlus-1.0.4.R5_Rel"
+          $exe = Get-ChildItem -Path $src -Recurse -Filter "MIDI++.exe" |
+            Where-Object { $_.FullName -match "x64\\Release" } |
+            Select-Object -First 1
+
+          if (-not $exe) {
+            throw "MIDI++.exe was not produced."
+          }
+
+          New-Item -ItemType Directory -Force -Path "dist"
+          Copy-Item $exe.FullName "dist\MIDI++.exe"
+          Copy-Item "$src\config.json" "dist\config.json"
+
+          if (Test-Path "$src\HUMANIZER.md") {
+            Copy-Item "$src\HUMANIZER.md" "dist\HUMANIZER.md"
+          }
+
+          New-Item -ItemType Directory -Force -Path "dist\midi" | Out-Null
+          "Place .mid/.midi files here, or drag MIDI files directly onto MIDI++." |
+            Set-Content "dist\midi\README.txt"
+
+      - name: Upload Humanizer 2.0 direct MidiConnect test build
+        uses: actions/upload-artifact@v4
+        with:
+          name: MIDIPlusPlus-Humanizer2-DirectMidiConnect-Test
+          path: dist
+          if-no-files-found: error
