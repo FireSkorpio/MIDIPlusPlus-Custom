@@ -2,11 +2,17 @@
 
 This repository is a modified build of MIDI++ and includes or depends on components with their own licensing terms.
 
-## MIDI++ upstream
+## Upstream authorship and revision status
+
+`MIDIPlusPlus-Custom` is **not the original MIDI++ project**. It is a revision/custom build based on **MIDI++ v1.0.4 R5**, originally developed by **Zephkek** and contributors.
 
 Upstream project: https://github.com/Zephkek/MIDIPlusPlus
 
-This customized repository is based on MIDI++ v1.0.4 R5. The project is distributed under the GNU General Public License version 3. A complete copy of the GPL v3 is provided in the repository root as `LICENSE` and again under `LICENSES/GPL-3.0.txt`.
+FireSkorpio maintains the modifications in this repository and does not claim authorship of the original MIDI++ codebase. Credit for the upstream project remains with Zephkek and its contributors. See `NOTICE.md` for the repository's explicit attribution notice.
+
+## MIDI++ upstream license
+
+The upstream MIDI++ project is distributed under the GNU General Public License version 3. This modified build remains under GPLv3. A complete copy of the GPL v3 is provided in the repository root as `LICENSE` and again under `LICENSES/GPL-3.0.txt`.
 
 Modifications in this repository are marked through Git history, update notes, and the custom-build documentation.
 
