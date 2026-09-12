@@ -7,6 +7,7 @@ on:
       - feature/humanizer-2.0
     paths:
       - ".github/workflows/build.yml"
+      - "MIDIPlusPlus-1.0.4.R5_Rel/MIDIDeviceUI.cpp"
 
 permissions:
   contents: write
