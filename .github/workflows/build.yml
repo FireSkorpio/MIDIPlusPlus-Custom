@@ -7,7 +7,9 @@ on:
       - feature/humanizer-2.0
     paths:
       - ".github/workflows/build.yml"
+      - "tools/apply_startup_diagnostics.py"
       - "MIDIPlusPlus-1.0.4.R5_Rel/MIDIDeviceUI.cpp"
+      - "MIDIPlusPlus-1.0.4.R5_Rel/MIDI++.cpp"
 
 permissions:
   contents: write
@@ -20,7 +22,7 @@ jobs:
       - name: Checkout source
         uses: actions/checkout@v4
 
-      - name: Apply startup splash and diagnostics
+      - name: Apply startup/MidiConnect isolation patch
         run: python tools/apply_startup_diagnostics.py
 
       - name: Setup MSBuild
@@ -37,7 +39,7 @@ jobs:
           git add "MIDIPlusPlus-1.0.4.R5_Rel/MIDI++.cpp" `
                   "UPDATE_NOTES.md"
           if (-not (git diff --cached --quiet)) {
-            git commit -m "Add startup diagnostics to Humanizer 2.0"
+            git commit -m "Defer startup MIDI scan and finalize direct MidiConnect output"
             git push origin HEAD:feature/humanizer-2.0
           }
 
