@@ -691,8 +691,7 @@ static void SetAlwaysOnTop(HWND hwnd, bool top) {
 static void UpdateWindowFocusability() {
     if (!g_hMainWnd) return;
     bool shouldBeNoActivate = false;
-    if ((g_midiConnect && g_midiConnect->IsActive()) ||
-        (g_midi2key && g_midi2key->IsActive()) ||
+    if ((g_midi2key && g_midi2key->IsActive()) ||
         (g_player && g_player->midiFileSelected.load(std::memory_order_acquire) && !g_player->paused.load(std::memory_order_relaxed)))
     {
         shouldBeNoActivate = true;
@@ -1941,7 +1940,10 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
             WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST,
             Layout::PB_MIDI_QWERTY_X + 120, Layout::PB_MIDI_QWERTY_Y, 130, 200,
             hWnd, reinterpret_cast<HMENU>(ID_CB_MIDIDEV), g_hInst, nullptr);
-        MIDIDeviceUI::PopulateMidiInDevices(cbMidiDev, g_selectedMidiDevice);
+        SendMessageW(cbMidiDev, CB_ADDSTRING, 0,
+            reinterpret_cast<LPARAM>(L"Live MIDI: click Refresh"));
+        SendMessage(cbMidiDev, CB_SETCURSEL, 0, 0);
+        g_selectedMidiDevice = -1;
         HWND cbMidiCh = CreateWindowW(L"combobox", nullptr,
             WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST,
             Layout::PB_MIDI_QWERTY_X + 120, Layout::PB_ROW2_Y, 130, 200,
@@ -2397,7 +2399,7 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
                 HWND hChk = reinterpret_cast<HWND>(lParam);
                 LRESULT state = SendMessage(hChk, BM_GETCHECK, 0, 0);
                 if (state == BST_CHECKED) {
-                    if ((g_midi2key && g_midi2key->IsActive()) || (g_midiConnect && g_midiConnect->IsActive())) {
+                    if ((g_midi2key && g_midi2key->IsActive())) {
                         MessageBoxA(hWnd, "Random Song cannot be enabled while MIDI2Key or MIDIConnect is active.",
                             "Conflict", MB_OK | MB_ICONWARNING);
                         SendMessage(hChk, BM_SETCHECK, BST_UNCHECKED, 0);
@@ -2491,7 +2493,7 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
 
         case ID_BTN_PLAY:
             if (code == BN_CLICKED) {
-                if ((g_midi2key && g_midi2key->IsActive()) || (g_midiConnect && g_midiConnect->IsActive())) {
+                if ((g_midi2key && g_midi2key->IsActive())) {
                     MessageBoxA(hWnd, "Auto controls are disabled while MIDI input is active.", "Info", MB_OK | MB_ICONINFORMATION);
                     break;
                 }
@@ -2517,8 +2519,7 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
                     if (!g_midiConnect)
                         g_midiConnect = std::make_unique<MIDIConnect>();
                     g_midiConnect->SetActive(true);
-                    g_midiConnect->OpenDevice(g_selectedMidiDevice);
-                    std::cout << "[MidiConnect] ENABLED\n";
+                    std::cout << "[MidiConnect] DIRECT PLAYBACK OUTPUT ENABLED\n";
                     FocusRobloxWindow();
                     g_midiConnect->ReleaseAllNumpadKeys();
                 }
@@ -2527,7 +2528,7 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
                         g_midiConnect->SetActive(false);
                         g_midiConnect->CloseDevice();
                     }
-                    std::cout << "[MidiConnect] DISABLED\n";
+                    std::cout << "[MidiConnect] DIRECT PLAYBACK OUTPUT DISABLED\n";
                 }
                 UpdateWindowFocusability();
             }
@@ -2535,7 +2536,7 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
 
         case ID_BTN_RESTART:
             if (code == BN_CLICKED) {
-                if ((g_midi2key && g_midi2key->IsActive()) || (g_midiConnect && g_midiConnect->IsActive())) {
+                if ((g_midi2key && g_midi2key->IsActive())) {
                     MessageBoxA(hWnd, "Auto controls are disabled while MIDI input is active.", "Info", MB_OK | MB_ICONINFORMATION);
                     break;
                 }
@@ -2550,7 +2551,7 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
 
         case ID_BTN_SKIP:
             if (code == BN_CLICKED) {
-                if ((g_midi2key && g_midi2key->IsActive()) || (g_midiConnect && g_midiConnect->IsActive())) {
+                if ((g_midi2key && g_midi2key->IsActive())) {
                     MessageBoxA(hWnd, "Auto controls are disabled while MIDI input is active.", "Info", MB_OK | MB_ICONINFORMATION);
                     break;
                 }
@@ -2565,7 +2566,7 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
 
         case ID_BTN_REW:
             if (code == BN_CLICKED) {
-                if ((g_midi2key && g_midi2key->IsActive()) || (g_midiConnect && g_midiConnect->IsActive())) {
+                if ((g_midi2key && g_midi2key->IsActive())) {
                     MessageBoxA(hWnd, "Auto controls are disabled while MIDI input is active.", "Info", MB_OK | MB_ICONINFORMATION);
                     break;
                 }
@@ -2580,7 +2581,7 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
 
         case ID_BTN_SPEEDUP:
             if (code == BN_CLICKED) {
-                if ((g_midi2key && g_midi2key->IsActive()) || (g_midiConnect && g_midiConnect->IsActive())) {
+                if ((g_midi2key && g_midi2key->IsActive())) {
                     MessageBoxA(hWnd, "Auto controls are disabled while MIDI input is active.", "Info", MB_OK | MB_ICONINFORMATION);
                     break;
                 }
@@ -2594,7 +2595,7 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
 
         case ID_BTN_SPEEDDN:
             if (code == BN_CLICKED) {
-                if ((g_midi2key && g_midi2key->IsActive()) || (g_midiConnect && g_midiConnect->IsActive())) {
+                if ((g_midi2key && g_midi2key->IsActive())) {
                     MessageBoxA(hWnd, "Auto controls are disabled while MIDI input is active.", "Info", MB_OK | MB_ICONINFORMATION);
                     break;
                 }
@@ -2651,10 +2652,6 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
                     << (sel < 5 ? g_player->getVelocityCurveName(config.playback.velocityCurve)
                         : config.playback.customVelocityCurves[sel - 5].name) << "\n";
 
-                if (g_midiConnect && g_midiConnect->IsActive()) {
-                    g_midiConnect->CloseDevice();
-                    g_midiConnect->OpenDevice(g_selectedMidiDevice);
-                }
                 if (g_midi2key && g_midi2key->IsActive()) {
                     g_midi2key->CloseDevice();
                     g_midi2key->OpenDevice(g_selectedMidiDevice);
@@ -2670,10 +2667,6 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
                 if (g_midi2key && g_midi2key->IsActive()) {
                     g_midi2key->CloseDevice();
                     g_midi2key->OpenDevice(sel);
-                }
-                if (g_midiConnect && g_midiConnect->IsActive()) {
-                    g_midiConnect->CloseDevice();
-                    g_midiConnect->OpenDevice(sel);
                 }
             }
             break;
@@ -3157,10 +3150,9 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
             "RegisterClassExW failed with Windows error " + std::to_string(GetLastError()));
     }
 
-    // WM_CREATE populates the controls and enumerates MIDI input devices. If
-    // that step is slow or blocked, the splash remains visible with this exact
-    // status instead of making MIDI++ appear to do nothing.
-    SetStartupStatus(startupSplash, L"Building interface and scanning MIDI devices...");
+    // WM_CREATE now avoids Windows MIDI enumeration entirely. Physical MIDI
+    // devices are enumerated only when Refresh MIDI is explicitly requested.
+    SetStartupStatus(startupSplash, L"Building interface...");
     SetLastError(ERROR_SUCCESS);
     g_hMainWnd = CreateWindowExW(WS_EX_NOACTIVATE | WS_EX_APPWINDOW | WS_EX_LAYERED,
         wc.lpszClassName,

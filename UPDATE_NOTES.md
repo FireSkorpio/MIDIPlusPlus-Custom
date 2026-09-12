@@ -85,3 +85,10 @@ The shipped **Casual** preset uses:
 - Startup failures are also written to `startup_error.txt` beside `MIDI++.exe` for easy troubleshooting.
 - If the single-instance mutex exists but the previous MIDI++ window cannot be found, MIDI++ now explains that another background instance may still be running.
 
+## Startup MIDI isolation / direct MidiConnect test
+
+- Physical MIDI device enumeration no longer runs during `WM_CREATE`; the device list is populated only when **Refresh MIDI** is pressed.
+- The built-in **MidiConnect** toggle is now a loaded-MIDI playback output mode and no longer opens a Windows MIDI input endpoint.
+- Autoplay controls remain available while MidiConnect output is enabled.
+- Velocity-curve and physical-device selection changes no longer reopen MidiConnect as a MIDI input device.
+
