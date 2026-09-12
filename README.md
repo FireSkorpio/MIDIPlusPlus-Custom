@@ -1,6 +1,6 @@
 # MIDI++ Custom Build
 
-A customized Windows build of [MIDI++](https://github.com/Zephkek/MIDIPlusPlus) focused on virtual-piano playback, Humanizer improvements, quality-of-life features, and direct Visual Pianos MidiConnect output.
+A customized Windows build of [MIDI++](https://github.com/Zephkek/MIDIPlusPlus) focused on virtual-piano playback, Humanizer improvements, quality-of-life features, and direct MidiConnect playback.
 
 > **Upstream attribution:** This is **not the original MIDI++ project**. The original MIDI++ codebase was created by **Zephkek** and contributors. This repository is a revision/custom build based on MIDI++ v1.0.4 R5 and maintained by **FireSkorpio**. FireSkorpio does not claim authorship of the original MIDI++ codebase. See [NOTICE.md](NOTICE.md) for the attribution notice.
 
