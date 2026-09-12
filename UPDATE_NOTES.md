@@ -77,3 +77,11 @@ The shipped **Casual** preset uses:
 - Panic/stop/reset explicitly sends note-off messages for protocol notes still active plus sustain-off to reduce stuck notes.
 - Existing physical MIDI input through the MidiConnect button remains available.
 
+## Startup diagnostics (Humanizer 2.0 test branch)
+
+- MIDI++ now shows a small startup window immediately so a slow launch no longer looks like nothing happened.
+- The startup window reports the current stage, including graphics, playback/config initialization, resources, and interface/MIDI-device enumeration.
+- Startup exceptions are caught and shown in a message box instead of terminating silently.
+- Startup failures are also written to `startup_error.txt` beside `MIDI++.exe` for easy troubleshooting.
+- If the single-instance mutex exists but the previous MIDI++ window cannot be found, MIDI++ now explains that another background instance may still be running.
+
