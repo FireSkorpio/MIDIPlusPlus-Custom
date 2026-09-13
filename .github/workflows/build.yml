@@ -2,9 +2,20 @@ name: Build MIDI++ Custom Build
 
 on:
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Optional existing release tag to upload the finished ZIP to"
+        required: false
+        type: string
   push:
     branches:
       - main
+  release:
+    types:
+      - published
+
+permissions:
+  contents: write
 
 jobs:
   build:
@@ -67,9 +78,36 @@ jobs:
           Write-Host "Package contents:"
           Get-ChildItem -Path "dist" -Recurse
 
-      - name: Upload finished MIDI++
+      - name: Create downloadable release ZIP
+        shell: powershell
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name || inputs.release_tag }}
+        run: |
+          $tag = $env:RELEASE_TAG
+          if ([string]::IsNullOrWhiteSpace($tag)) {
+            $tag = "MIDIPlusPlus-Custom-Build"
+          }
+
+          $safeTag = $tag -replace '^MIDI\+\+', 'MIDIPlusPlus'
+          $safeTag = $safeTag -replace '[^A-Za-z0-9._-]', '-'
+          $zip = "$safeTag.zip"
+
+          Compress-Archive -Path "dist\*" -DestinationPath $zip -Force
+          "RELEASE_ZIP=$zip" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          Write-Host "Created $zip"
+
+      - name: Upload finished MIDI++ build artifact
         uses: actions/upload-artifact@v4
         with:
           name: MIDIPlusPlus-Custom-Build
           path: dist
           if-no-files-found: error
+
+      - name: Attach ZIP to GitHub Release
+        if: ${{ github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.release_tag != '') }}
+        shell: powershell
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.event.release.tag_name || inputs.release_tag }}
+        run: |
+          gh release upload "$env:RELEASE_TAG" "$env:RELEASE_ZIP" --clobber --repo "${{ github.repository }}"
