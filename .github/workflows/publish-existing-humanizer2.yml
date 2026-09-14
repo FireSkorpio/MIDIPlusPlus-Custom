@@ -1,4 +1,4 @@
-name: Publish Existing Humanizer 2.0 Release Asset
+name: Fix Humanizer 2.0 Release Notes
 
 on:
   push:
@@ -11,52 +11,29 @@ permissions:
   contents: write
 
 jobs:
-  publish:
-    runs-on: windows-latest
+  update-notes:
+    runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout Humanizer 2.0 release tag
-        uses: actions/checkout@v4
-        with:
-          ref: "MIDI++-Humanizer-2.0"
-
-      - name: Setup MSBuild
-        uses: microsoft/setup-msbuild@v2
-
-      - name: Build MIDI++ Humanizer 2.0 x64
-        run: msbuild "MIDIPlusPlus-1.0.4.R5_Rel\MIDI++.sln" /m /p:Configuration=Release /p:Platform=x64
-
-      - name: Prepare release package
-        shell: powershell
-        run: |
-          $src = "MIDIPlusPlus-1.0.4.R5_Rel"
-          $exe = Get-ChildItem -Path $src -Recurse -Filter "MIDI++.exe" |
-            Where-Object { $_.FullName -match "x64\\Release" } |
-            Select-Object -First 1
-
-          if (-not $exe) { throw "MIDI++.exe was not produced." }
-          if (-not (Test-Path "$src\config.json")) { throw "config.json was not found." }
-
-          New-Item -ItemType Directory -Force -Path "dist"
-          Copy-Item $exe.FullName "dist\MIDI++.exe"
-          Copy-Item "$src\config.json" "dist\config.json"
-
-          if (Test-Path "$src\HUMANIZER.md") { Copy-Item "$src\HUMANIZER.md" "dist\HUMANIZER.md" }
-          if (Test-Path "README.md") { Copy-Item "README.md" "dist\README.md" }
-          if (Test-Path "NOTICE.md") { Copy-Item "NOTICE.md" "dist\NOTICE.md" }
-          if (Test-Path "LICENSE") { Copy-Item "LICENSE" "dist\LICENSE" }
-          if (Test-Path "THIRD_PARTY_NOTICES.md") { Copy-Item "THIRD_PARTY_NOTICES.md" "dist\THIRD_PARTY_NOTICES.md" }
-          if (Test-Path "LICENSES") { Copy-Item "LICENSES" "dist\LICENSES" -Recurse }
-
-          New-Item -ItemType Directory -Force -Path "dist\midi" | Out-Null
-          "Place .mid/.midi files here, or drag MIDI files directly onto MIDI++." |
-            Set-Content "dist\midi\README.txt"
-
-          Compress-Archive -Path "dist\*" -DestinationPath "MIDIPlusPlus-Humanizer-2.0.zip" -Force
-
-      - name: Attach ZIP to Humanizer 2.0 release
-        shell: powershell
+      - name: Update release asset filename in notes
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release upload "MIDI++-Humanizer-2.0" "MIDIPlusPlus-Humanizer-2.0.zip" --clobber --repo "${{ github.repository }}"
+          python3 - <<'PY'
+          import os
+          import subprocess
+          from pathlib import Path
+
+          repo = os.environ["GITHUB_REPOSITORY"]
+          tag = "MIDI++-Humanizer-2.0"
+          body = subprocess.check_output(
+              ["gh", "release", "view", tag, "--repo", repo, "--json", "body", "--jq", ".body"],
+              text=True,
+          )
+          body = body.replace("MIDIPlusPlus-Custom-Build.zip", "MIDIPlusPlus-Humanizer-2.0.zip")
+          Path("release-notes.md").write_text(body, encoding="utf-8")
+          PY
+
+          gh release edit "MIDI++-Humanizer-2.0" \
+            --repo "${{ github.repository }}" \
+            --notes-file release-notes.md
