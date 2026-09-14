@@ -24,19 +24,21 @@ This modified build remains licensed under the GNU GPL v3. See [LICENSE](LICENSE
 - Roblox/your target virtual piano if you are using the autoplay or MidiConnect features.
 - A physical MIDI keyboard is optional and is only needed for live MIDI input features.
 
-MIDI++ is currently a Windows application. Experimental macOS work is kept on the separate `feature/macos-port` branch and is not part of the Windows release.
+MIDI++ is currently a Windows application. A macOS port is being developed separately and is not part of the Windows release yet.
 
 ## Download
 
-The repository's GitHub Actions workflow builds the current `main` branch as a Release x64 package.
+For normal installation, use the repository's **Releases** page. You do not need to download builds from the Actions tab.
 
-1. Open the repository's **Actions** tab.
-2. Open **Build MIDI++ Custom Build**.
-3. Open the newest successful run.
-4. Download the `MIDIPlusPlus-Custom-Build` artifact.
-5. Extract the ZIP before launching the program.
+1. Open **Releases** on this repository.
+2. Open the newest stable release.
+3. Under **Assets**, download the release ZIP. For Humanizer 2.0 this is `MIDIPlusPlus-Humanizer-2.0.zip`.
+4. Extract the ZIP to a normal folder.
+5. Run `MIDI++.exe` from the extracted folder.
 
 Do not run `MIDI++.exe` from inside the ZIP archive.
+
+GitHub Actions artifacts are development/testing builds and are not the recommended installation method for normal users.
 
 ## Installation
 
@@ -148,7 +150,7 @@ If MIDI++ does not start or behaves unexpectedly:
 
 1. Make sure only one `MIDI++.exe` instance is running.
 2. Keep `config.json` beside the executable.
-3. Try a clean extracted copy of the newest build.
+3. Try a clean extracted copy of the newest release.
 4. Check `startup_error.txt` if one was created.
 5. If a physical MIDI-device refresh hangs, disconnect problem devices/drivers and retry; normal loaded-MIDI playback does not require physical MIDI enumeration.
 6. When reporting a bug, include your Windows version, the build/commit you tested, steps to reproduce, relevant log text, and `startup_error.txt` when available.
@@ -163,11 +165,11 @@ Typical Release build:
 msbuild "MIDIPlusPlus-1.0.4.R5_Rel\MIDI++.sln" /m /p:Configuration=Release /p:Platform=x64
 ```
 
-The GitHub Actions workflow performs the same Release x64 build automatically.
+The GitHub Actions workflow performs the same Release x64 build automatically. Published GitHub Releases also receive a ready-to-download ZIP asset automatically.
 
 ## macOS support
 
-There is no production macOS build yet. Experimental porting work is isolated on `feature/macos-port`.
+There is no production macOS build yet. The experimental macOS port is being developed separately from this public Windows repository until it is ready for broader testing.
 
 The MIDI parser, scheduler, Humanizer, Playability logic, configuration logic, and much of the playback state machine are portable C++, but the Windows application also relies on Win32 UI, GDI+/Common Controls, C++/WinRT MIDI APIs, Windows scan codes, and Windows input injection. The macOS work is replacing those platform-specific layers while reusing the portable playback logic.
 
