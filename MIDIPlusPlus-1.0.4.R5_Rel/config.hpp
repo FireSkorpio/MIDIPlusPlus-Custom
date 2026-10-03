@@ -109,6 +109,7 @@ namespace midi {
     struct UISettings {
         bool alwaysOnTop = false;
         int opacity = 255;
+        int midiSortMode = 0;
         std::string lastMidiDirectory = "midi";
         std::vector<std::string> recentMidiFiles;
     };
