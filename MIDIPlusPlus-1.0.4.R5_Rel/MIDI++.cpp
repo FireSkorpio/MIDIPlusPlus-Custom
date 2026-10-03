@@ -2120,7 +2120,7 @@ static LRESULT CALLBACK OverlayWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
 
         makeStatic(L"MIDI++ Overlay  |  F5 hides", 0, 14, 8, 240, 20);
         makeStatic(L"No MIDI loaded", ID_OV_STATUS, 255, 8, 430, 20, SS_CENTER);
-        makeButton(L"Overlay ON", ID_OV_HIDE, 700, 5, 105, 26);
+        makeButton(L"Full App (F5)", ID_OV_HIDE, 690, 5, 115, 26);
 
         makeButton(L"Rew -10", ID_OV_REW, 14, 38, 70, 27);
         makeButton(L"Play", ID_OV_PLAY, 90, 38, 70, 27);
@@ -2411,7 +2411,7 @@ static bool EnsureOverlayWindow() {
         L"MIDI++ Overlay",
         WS_POPUP | WS_CLIPCHILDREN,
         x, y, width, height,
-        g_hMainWnd, nullptr, g_hInst, nullptr);
+        nullptr, nullptr, g_hInst, nullptr);
 
     if (!g_hOverlayWnd) {
         std::cout << "[Overlay] Could not create overlay window. Error " << GetLastError() << ".\n";
@@ -2433,16 +2433,26 @@ static void SetOverlayVisible(bool visible) {
         ShowWindow(g_hOverlayWnd, SW_SHOWNOACTIVATE);
         SetWindowPos(g_hOverlayWnd, HWND_TOPMOST, 0, 0, 0, 0,
             SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
-        // Free the single-monitor workspace without terminating or pausing MIDI++.
-        ShowWindow(g_hMainWnd, SW_MINIMIZE);
-        std::cout << "[Overlay] Enabled. Press F5 or Overlay ON to hide it.\n";
+        // Overlay mode replaces the full interface instead of coexisting with it.
+        // Hiding the main window avoids Windows' owned-window minimize behavior and
+        // keeps the overlay visible as the single active MIDI++ surface.
+        ShowWindow(g_hMainWnd, SW_HIDE);
+        std::cout << "[Overlay] Enabled. Press F5 or Full App to return to the main interface.\n";
     }
     else {
         g_overlayVisible = false;
         g_toggleStates[ID_BTN_OVERLAY] = false;
         if (g_hOverlayWnd && IsWindow(g_hOverlayWnd))
             ShowWindow(g_hOverlayWnd, SW_HIDE);
-        std::cout << "[Overlay] Hidden. MIDI++ continues running.\n";
+
+        // F5/Full App switches back to the normal MIDI++ interface.
+        if (g_hMainWnd && IsWindow(g_hMainWnd)) {
+            ShowWindow(g_hMainWnd, SW_SHOWNORMAL);
+            SetWindowPos(g_hMainWnd, nullptr, 0, 0, 0, 0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER);
+            SetForegroundWindow(g_hMainWnd);
+        }
+        std::cout << "[Overlay] Disabled. Returned to the full MIDI++ interface.\n";
     }
 
     if (g_hMainWnd) {
@@ -2809,7 +2819,7 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
         AddToolTip(hWnd, ID_BTN_VELOCITY, L"Use MIDI note velocity when choosing virtual-piano velocity keys.");
         AddToolTip(hWnd, ID_BTN_TRANSPOSEOUT, L"Transpose notes that would otherwise fall outside the selected keyboard range.");
         AddToolTip(hWnd, ID_BTN_PLAYABILITY, L"Optional virtual-piano optimizer. Limits simultaneous physical attacks to 5 notes per hand and 10 total while preserving bass, top voice, velocity, and likely melody importance.");
-        AddToolTip(hWnd, ID_BTN_OVERLAY, L"Show the in-game overlay. F5 toggles the overlay from anywhere.");
+        AddToolTip(hWnd, ID_BTN_OVERLAY, L"Switch between the full MIDI++ interface and the in-game overlay. F5 toggles modes from anywhere.");
         AddToolTip(hWnd, ID_BTN_MIDI2QWERTY, L"Use a physical MIDI input device to send QWERTY piano keys.");
         AddToolTip(hWnd, ID_BTN_MIDICONNECT, L"Send loaded MIDI (and optional live MIDI input) directly through the Visual Pianos MidiConnect protocol.");
         AddToolTip(hWnd, ID_SLIDER_SEEK, L"Drag to seek directly through the loaded song.");
