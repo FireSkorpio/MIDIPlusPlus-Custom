@@ -180,6 +180,7 @@ public:
     void restart_song();
     void speed_up();
     void slow_down();
+    void set_playback_speed(double speed);
     void toggle_out_of_range_transpose();
     void toggle_88_key_mode();
     void toggle_velocity_keypress();
