@@ -1836,7 +1836,9 @@ static const wchar_t* kHelpText =
     L"Tempo-aware timing, melody-priority timing, and velocity humanization are config-only and disabled by default.\r\n"
     L"Velocity Humanizer modes: BALANCED, MELODY_FOCUS, CHORD_FOCUS.\r\n"
     L"Playability is the visible optional toggle; it limits simultaneous physical attacks, not sustain-held sounding notes.\r\n\r\n"
-    L"CONFIG SAFETY\r\n"
+    L"SETTINGS / CONFIG\r\n"
+    L"Use the Settings button for interface, playback, Humanizer advanced options, playability, volume and hotkeys. Save Settings writes config.json and Restart MIDI++ applies all changes cleanly.\r\n"
+    L"The MIDI browser remembers its folder and sort order, supports live search, Up/Backspace navigation, Enter to open/load, and keeps up to 10 recent MIDIs.\r\n"
     L"If config.json cannot be loaded, MIDI++ no longer overwrites it. It uses defaults for that launch and creates config.invalid.backup.json plus config_error.txt.\r\n";
 
 static LRESULT CALLBACK HelpWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
@@ -1897,6 +1899,608 @@ static void ShowHelpPopup(HWND owner) {
         CenterPopup(g_hHelpWnd, owner);
         ShowWindow(g_hHelpWnd, SW_SHOW);
         SetForegroundWindow(g_hHelpWnd);
+    }
+}
+
+
+
+// -----------------------------------------------------------------------------
+// Settings window
+// -----------------------------------------------------------------------------
+enum SettingsControlID {
+    ID_SET_TAB = 6001,
+    ID_SET_SAVE,
+    ID_SET_RESET,
+    ID_SET_RESTART,
+    ID_SET_CLOSE,
+    ID_SET_STATUS,
+
+    ID_SET_ALWAYS_TOP,
+    ID_SET_OPACITY,
+    ID_SET_FILTER_DRUMS,
+    ID_SET_AUTO_TRANSPOSE,
+    ID_SET_TRANSPOSE_UP,
+    ID_SET_TRANSPOSE_DOWN,
+    ID_SET_VOL_MIN,
+    ID_SET_VOL_MAX,
+    ID_SET_VOL_INITIAL,
+    ID_SET_VOL_STEP,
+    ID_SET_VOL_INTERVAL,
+
+    ID_SET_NOTE_MODE,
+    ID_SET_REPEAT_GAP,
+    ID_SET_PLAYABILITY,
+    ID_SET_PLAY_MAX_TOTAL,
+    ID_SET_PLAY_MAX_HAND,
+    ID_SET_PLAY_WINDOW,
+
+    ID_SET_HUM_ENABLED,
+    ID_SET_HUM_SEQ,
+    ID_SET_HUM_RANDOM,
+    ID_SET_HUM_CHORD_WINDOW,
+    ID_SET_HUM_PRESS_MIN,
+    ID_SET_HUM_PRESS_MAX,
+    ID_SET_HUM_RELEASE_MIN,
+    ID_SET_HUM_RELEASE_MAX,
+    ID_SET_HUM_SIM_CHANCE,
+    ID_SET_HUM_SEQ_TRIGGER,
+    ID_SET_HUM_SEQ_MIN,
+    ID_SET_HUM_SEQ_MAX,
+    ID_SET_HUM_BETTER_HANDS,
+    ID_SET_HUM_TEMPO,
+    ID_SET_HUM_MELODY,
+    ID_SET_HUM_VELOCITY,
+    ID_SET_HUM_VEL_MODE,
+    ID_SET_HUM_VEL_VARIATION,
+
+    ID_SET_HK_PLAY,
+    ID_SET_HK_REW,
+    ID_SET_HK_SKIP,
+    ID_SET_HK_PANIC,
+    ID_SET_HK_SUSTAIN,
+    ID_SET_HK_VOL_UP,
+    ID_SET_HK_VOL_DOWN
+};
+
+static HWND FindSettingsControl(int id) {
+    if (g_hSettingsWnd) {
+        HWND direct = GetDlgItem(g_hSettingsWnd, id);
+        if (direct)
+            return direct;
+    }
+    for (HWND page : g_settingsPages) {
+        if (!page)
+            continue;
+        HWND child = GetDlgItem(page, id);
+        if (child)
+            return child;
+    }
+    return nullptr;
+}
+
+static HWND CreateSettingsLabel(HWND parent, const wchar_t* textValue, int x, int y, int w = 200) {
+    HWND h = CreateWindowW(L"static", textValue, WS_CHILD | WS_VISIBLE,
+        x, y, w, 20, parent, nullptr, g_hInst, nullptr);
+    SetDefaultGuiFont(h);
+    return h;
+}
+
+static HWND CreateSettingsEdit(HWND parent, int id, const std::wstring& value,
+    int x, int y, int w = 95, bool numeric = false) {
+    DWORD style = WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL;
+    if (numeric)
+        style |= ES_NUMBER | ES_RIGHT;
+    HWND h = CreateWindowExW(WS_EX_CLIENTEDGE, L"edit", value.c_str(), style,
+        x, y, w, 22, parent, reinterpret_cast<HMENU>(id), g_hInst, nullptr);
+    SetDefaultGuiFont(h);
+    return h;
+}
+
+static HWND CreateSettingsIntEdit(HWND parent, int id, int value, int x, int y, int w = 80) {
+    return CreateSettingsEdit(parent, id, std::to_wstring(value), x, y, w, true);
+}
+
+static HWND CreateSettingsCheck(HWND parent, int id, const wchar_t* textValue,
+    bool checked, int x, int y, int w = 260) {
+    HWND h = CreateWindowW(L"button", textValue,
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX,
+        x, y, w, 22, parent, reinterpret_cast<HMENU>(id), g_hInst, nullptr);
+    SendMessage(h, BM_SETCHECK, checked ? BST_CHECKED : BST_UNCHECKED, 0);
+    SetDefaultGuiFont(h);
+    return h;
+}
+
+static HWND CreateSettingsCombo(HWND parent, int id, int x, int y, int w = 175) {
+    HWND h = CreateWindowW(L"combobox", nullptr,
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | CBS_DROPDOWNLIST | WS_VSCROLL,
+        x, y, w, 180, parent, reinterpret_cast<HMENU>(id), g_hInst, nullptr);
+    SetDefaultGuiFont(h);
+    return h;
+}
+
+static int ReadSettingsInt(int id, int fallback, int minValue, int maxValue) {
+    HWND h = FindSettingsControl(id);
+    if (!h)
+        return fallback;
+    wchar_t buffer[64]{};
+    GetWindowTextW(h, buffer, static_cast<int>(std::size(buffer)));
+    wchar_t* end = nullptr;
+    long value = wcstol(buffer, &end, 10);
+    if (end == buffer)
+        value = fallback;
+    return static_cast<int>(std::clamp<long>(value, minValue, maxValue));
+}
+
+static std::string ReadSettingsString(int id, const std::string& fallback) {
+    HWND h = FindSettingsControl(id);
+    if (!h)
+        return fallback;
+    const int len = GetWindowTextLengthW(h);
+    if (len <= 0)
+        return fallback;
+    std::wstring value(static_cast<size_t>(len) + 1, L'\0');
+    GetWindowTextW(h, value.data(), len + 1);
+    value.resize(static_cast<size_t>(len));
+    return WideToUtf8(value);
+}
+
+static bool ReadSettingsCheck(int id, bool fallback = false) {
+    HWND h = FindSettingsControl(id);
+    if (!h)
+        return fallback;
+    return SendMessage(h, BM_GETCHECK, 0, 0) == BST_CHECKED;
+}
+
+static void SetSettingsInt(int id, int value) {
+    HWND h = FindSettingsControl(id);
+    if (h)
+        SetWindowTextW(h, std::to_wstring(value).c_str());
+}
+
+static void SetSettingsText(int id, const std::string& value) {
+    HWND h = FindSettingsControl(id);
+    if (h) {
+        const std::wstring wide = Utf8ToWide(value);
+        SetWindowTextW(h, wide.c_str());
+    }
+}
+
+static void SetSettingsCheck(int id, bool value) {
+    HWND h = FindSettingsControl(id);
+    if (h)
+        SendMessage(h, BM_SETCHECK, value ? BST_CHECKED : BST_UNCHECKED, 0);
+}
+
+static void PopulateSettingsControls(HWND hwnd) {
+    const auto& cfg = midi::Config::getInstance();
+
+    SetSettingsCheck(ID_SET_ALWAYS_TOP, cfg.ui.alwaysOnTop);
+    SetSettingsInt(ID_SET_OPACITY, cfg.ui.opacity);
+    SetSettingsCheck(ID_SET_FILTER_DRUMS, cfg.midi.FILTER_DRUMS);
+    SetSettingsCheck(ID_SET_AUTO_TRANSPOSE, cfg.auto_transpose.ENABLED);
+    SetSettingsText(ID_SET_TRANSPOSE_UP, cfg.auto_transpose.TRANSPOSE_UP_KEY);
+    SetSettingsText(ID_SET_TRANSPOSE_DOWN, cfg.auto_transpose.TRANSPOSE_DOWN_KEY);
+
+    SetSettingsInt(ID_SET_VOL_MIN, cfg.volume.MIN_VOLUME);
+    SetSettingsInt(ID_SET_VOL_MAX, cfg.volume.MAX_VOLUME);
+    SetSettingsInt(ID_SET_VOL_INITIAL, cfg.volume.INITIAL_VOLUME);
+    SetSettingsInt(ID_SET_VOL_STEP, cfg.volume.VOLUME_STEP);
+    SetSettingsInt(ID_SET_VOL_INTERVAL, cfg.volume.ADJUSTMENT_INTERVAL_MS);
+
+    HWND noteMode = FindSettingsControl(ID_SET_NOTE_MODE);
+    if (noteMode) {
+        int sel = 1;
+        if (cfg.playback.noteHandlingMode == midi::NoteHandlingMode::FIFO) sel = 0;
+        if (cfg.playback.noteHandlingMode == midi::NoteHandlingMode::NoHandling) sel = 2;
+        SendMessage(noteMode, CB_SETCURSEL, sel, 0);
+    }
+    SetSettingsInt(ID_SET_REPEAT_GAP, cfg.playback.REPEATED_NOTE_GAP_MS);
+    SetSettingsCheck(ID_SET_PLAYABILITY, cfg.playability.ENABLED);
+    SetSettingsInt(ID_SET_PLAY_MAX_TOTAL, cfg.playability.MAX_SIMULTANEOUS_NOTES);
+    SetSettingsInt(ID_SET_PLAY_MAX_HAND, cfg.playability.MAX_NOTES_PER_HAND);
+    SetSettingsInt(ID_SET_PLAY_WINDOW, cfg.playability.SIMULTANEOUS_WINDOW_MS);
+
+    const auto& h = cfg.humanizer;
+    SetSettingsCheck(ID_SET_HUM_ENABLED, h.ENABLED);
+    SetSettingsCheck(ID_SET_HUM_SEQ, h.SEQUENTIAL_ARTICULATION);
+    SetSettingsCheck(ID_SET_HUM_RANDOM, h.RANDOMIZE_EACH_PLAY);
+    SetSettingsInt(ID_SET_HUM_CHORD_WINDOW, h.CHORD_DETECTION_WINDOW_MS);
+    SetSettingsInt(ID_SET_HUM_PRESS_MIN, h.CHORD_PRESS_MIN_SPREAD_MS);
+    SetSettingsInt(ID_SET_HUM_PRESS_MAX, h.CHORD_PRESS_MAX_SPREAD_MS);
+    SetSettingsInt(ID_SET_HUM_RELEASE_MIN, h.CHORD_RELEASE_MIN_SPREAD_MS);
+    SetSettingsInt(ID_SET_HUM_RELEASE_MAX, h.CHORD_RELEASE_MAX_SPREAD_MS);
+    SetSettingsInt(ID_SET_HUM_SIM_CHANCE, h.SIMULTANEOUS_FINGER_CHANCE_PERCENT);
+    SetSettingsInt(ID_SET_HUM_SEQ_TRIGGER, h.SEQUENTIAL_TRIGGER_WINDOW_MS);
+    SetSettingsInt(ID_SET_HUM_SEQ_MIN, h.SEQUENTIAL_MIN_GAP_MS);
+    SetSettingsInt(ID_SET_HUM_SEQ_MAX, h.SEQUENTIAL_MAX_GAP_MS);
+
+    const auto& adv = cfg.humanizerAdvanced;
+    SetSettingsCheck(ID_SET_HUM_BETTER_HANDS, adv.BETTER_HAND_INFERENCE);
+    SetSettingsCheck(ID_SET_HUM_TEMPO, adv.TEMPO_AWARE_ENABLED);
+    SetSettingsCheck(ID_SET_HUM_MELODY, adv.MELODY_PRIORITY_ENABLED);
+    SetSettingsCheck(ID_SET_HUM_VELOCITY, adv.VELOCITY_HUMANIZER_ENABLED);
+    HWND velMode = FindSettingsControl(ID_SET_HUM_VEL_MODE);
+    if (velMode) {
+        int sel = 0;
+        if (adv.VELOCITY_HUMANIZER_MODE == "MELODY_FOCUS") sel = 1;
+        else if (adv.VELOCITY_HUMANIZER_MODE == "CHORD_FOCUS") sel = 2;
+        SendMessage(velMode, CB_SETCURSEL, sel, 0);
+    }
+    SetSettingsInt(ID_SET_HUM_VEL_VARIATION, adv.VELOCITY_VARIATION);
+
+    SetSettingsText(ID_SET_HK_PLAY, cfg.hotkeys.PLAY_PAUSE_KEY);
+    SetSettingsText(ID_SET_HK_REW, cfg.hotkeys.REWIND_KEY);
+    SetSettingsText(ID_SET_HK_SKIP, cfg.hotkeys.SKIP_KEY);
+    SetSettingsText(ID_SET_HK_PANIC, cfg.hotkeys.PANIC_KEY);
+    SetSettingsText(ID_SET_HK_SUSTAIN, cfg.hotkeys.SUSTAIN_KEY);
+    SetSettingsText(ID_SET_HK_VOL_UP, cfg.hotkeys.VOLUME_UP_KEY);
+    SetSettingsText(ID_SET_HK_VOL_DOWN, cfg.hotkeys.VOLUME_DOWN_KEY);
+
+    if (HWND status = GetDlgItem(hwnd, ID_SET_STATUS))
+        SetWindowTextW(status, L"Changes are saved to config.json and take effect after restart.");
+}
+
+static bool SaveSettingsFromControls(HWND hwnd) {
+    auto& cfg = midi::Config::getInstance();
+    try {
+        nlohmann::json oldHumanizer = cfg.humanizer;
+
+        cfg.ui.alwaysOnTop = ReadSettingsCheck(ID_SET_ALWAYS_TOP, cfg.ui.alwaysOnTop);
+        cfg.ui.opacity = ReadSettingsInt(ID_SET_OPACITY, cfg.ui.opacity, 100, 255);
+        cfg.midi.FILTER_DRUMS = ReadSettingsCheck(ID_SET_FILTER_DRUMS, cfg.midi.FILTER_DRUMS);
+
+        cfg.auto_transpose.ENABLED = ReadSettingsCheck(ID_SET_AUTO_TRANSPOSE, cfg.auto_transpose.ENABLED);
+        cfg.auto_transpose.TRANSPOSE_UP_KEY = ReadSettingsString(ID_SET_TRANSPOSE_UP, cfg.auto_transpose.TRANSPOSE_UP_KEY);
+        cfg.auto_transpose.TRANSPOSE_DOWN_KEY = ReadSettingsString(ID_SET_TRANSPOSE_DOWN, cfg.auto_transpose.TRANSPOSE_DOWN_KEY);
+
+        cfg.volume.MIN_VOLUME = ReadSettingsInt(ID_SET_VOL_MIN, cfg.volume.MIN_VOLUME, 0, 200);
+        cfg.volume.MAX_VOLUME = ReadSettingsInt(ID_SET_VOL_MAX, cfg.volume.MAX_VOLUME, 0, 200);
+        cfg.volume.INITIAL_VOLUME = ReadSettingsInt(ID_SET_VOL_INITIAL, cfg.volume.INITIAL_VOLUME, 0, 200);
+        cfg.volume.VOLUME_STEP = ReadSettingsInt(ID_SET_VOL_STEP, cfg.volume.VOLUME_STEP, 1, 200);
+        cfg.volume.ADJUSTMENT_INTERVAL_MS = ReadSettingsInt(ID_SET_VOL_INTERVAL, cfg.volume.ADJUSTMENT_INTERVAL_MS, 0, 5000);
+
+        HWND noteMode = FindSettingsControl(ID_SET_NOTE_MODE);
+        const int noteSel = noteMode ? static_cast<int>(SendMessage(noteMode, CB_GETCURSEL, 0, 0)) : 1;
+        cfg.playback.noteHandlingMode = noteSel == 0 ? midi::NoteHandlingMode::FIFO :
+            (noteSel == 2 ? midi::NoteHandlingMode::NoHandling : midi::NoteHandlingMode::LIFO);
+        cfg.playback.REPEATED_NOTE_GAP_MS = ReadSettingsInt(ID_SET_REPEAT_GAP, cfg.playback.REPEATED_NOTE_GAP_MS, 0, 1000);
+
+        cfg.playability.ENABLED = ReadSettingsCheck(ID_SET_PLAYABILITY, cfg.playability.ENABLED);
+        cfg.playability.MAX_SIMULTANEOUS_NOTES = ReadSettingsInt(ID_SET_PLAY_MAX_TOTAL, cfg.playability.MAX_SIMULTANEOUS_NOTES, 1, 10);
+        cfg.playability.MAX_NOTES_PER_HAND = ReadSettingsInt(ID_SET_PLAY_MAX_HAND, cfg.playability.MAX_NOTES_PER_HAND, 1, 5);
+        cfg.playability.SIMULTANEOUS_WINDOW_MS = ReadSettingsInt(ID_SET_PLAY_WINDOW, cfg.playability.SIMULTANEOUS_WINDOW_MS, 0, 50);
+
+        auto& h = cfg.humanizer;
+        h.ENABLED = ReadSettingsCheck(ID_SET_HUM_ENABLED, h.ENABLED);
+        h.SEQUENTIAL_ARTICULATION = ReadSettingsCheck(ID_SET_HUM_SEQ, h.SEQUENTIAL_ARTICULATION);
+        h.RANDOMIZE_EACH_PLAY = ReadSettingsCheck(ID_SET_HUM_RANDOM, h.RANDOMIZE_EACH_PLAY);
+        h.CHORD_DETECTION_WINDOW_MS = ReadSettingsInt(ID_SET_HUM_CHORD_WINDOW, h.CHORD_DETECTION_WINDOW_MS, 0, 1000);
+        h.CHORD_PRESS_MIN_SPREAD_MS = ReadSettingsInt(ID_SET_HUM_PRESS_MIN, h.CHORD_PRESS_MIN_SPREAD_MS, 0, 1000);
+        h.CHORD_PRESS_MAX_SPREAD_MS = ReadSettingsInt(ID_SET_HUM_PRESS_MAX, h.CHORD_PRESS_MAX_SPREAD_MS, 0, 1000);
+        h.CHORD_RELEASE_MIN_SPREAD_MS = ReadSettingsInt(ID_SET_HUM_RELEASE_MIN, h.CHORD_RELEASE_MIN_SPREAD_MS, 0, 1000);
+        h.CHORD_RELEASE_MAX_SPREAD_MS = ReadSettingsInt(ID_SET_HUM_RELEASE_MAX, h.CHORD_RELEASE_MAX_SPREAD_MS, 0, 1000);
+        h.SIMULTANEOUS_FINGER_CHANCE_PERCENT = ReadSettingsInt(ID_SET_HUM_SIM_CHANCE, h.SIMULTANEOUS_FINGER_CHANCE_PERCENT, 0, 100);
+        h.SEQUENTIAL_TRIGGER_WINDOW_MS = ReadSettingsInt(ID_SET_HUM_SEQ_TRIGGER, h.SEQUENTIAL_TRIGGER_WINDOW_MS, 0, 1000);
+        h.SEQUENTIAL_MIN_GAP_MS = ReadSettingsInt(ID_SET_HUM_SEQ_MIN, h.SEQUENTIAL_MIN_GAP_MS, 0, 1000);
+        h.SEQUENTIAL_MAX_GAP_MS = ReadSettingsInt(ID_SET_HUM_SEQ_MAX, h.SEQUENTIAL_MAX_GAP_MS, 0, 1000);
+
+        auto& adv = cfg.humanizerAdvanced;
+        adv.BETTER_HAND_INFERENCE = ReadSettingsCheck(ID_SET_HUM_BETTER_HANDS, adv.BETTER_HAND_INFERENCE);
+        adv.TEMPO_AWARE_ENABLED = ReadSettingsCheck(ID_SET_HUM_TEMPO, adv.TEMPO_AWARE_ENABLED);
+        adv.MELODY_PRIORITY_ENABLED = ReadSettingsCheck(ID_SET_HUM_MELODY, adv.MELODY_PRIORITY_ENABLED);
+        adv.VELOCITY_HUMANIZER_ENABLED = ReadSettingsCheck(ID_SET_HUM_VELOCITY, adv.VELOCITY_HUMANIZER_ENABLED);
+        HWND velMode = FindSettingsControl(ID_SET_HUM_VEL_MODE);
+        const int velSel = velMode ? static_cast<int>(SendMessage(velMode, CB_GETCURSEL, 0, 0)) : 0;
+        adv.VELOCITY_HUMANIZER_MODE = velSel == 1 ? "MELODY_FOCUS" : (velSel == 2 ? "CHORD_FOCUS" : "BALANCED");
+        adv.VELOCITY_VARIATION = ReadSettingsInt(ID_SET_HUM_VEL_VARIATION, adv.VELOCITY_VARIATION, 0, 24);
+
+        cfg.hotkeys.PLAY_PAUSE_KEY = ReadSettingsString(ID_SET_HK_PLAY, cfg.hotkeys.PLAY_PAUSE_KEY);
+        cfg.hotkeys.REWIND_KEY = ReadSettingsString(ID_SET_HK_REW, cfg.hotkeys.REWIND_KEY);
+        cfg.hotkeys.SKIP_KEY = ReadSettingsString(ID_SET_HK_SKIP, cfg.hotkeys.SKIP_KEY);
+        cfg.hotkeys.PANIC_KEY = ReadSettingsString(ID_SET_HK_PANIC, cfg.hotkeys.PANIC_KEY);
+        cfg.hotkeys.SUSTAIN_KEY = ReadSettingsString(ID_SET_HK_SUSTAIN, cfg.hotkeys.SUSTAIN_KEY);
+        cfg.hotkeys.VOLUME_UP_KEY = ReadSettingsString(ID_SET_HK_VOL_UP, cfg.hotkeys.VOLUME_UP_KEY);
+        cfg.hotkeys.VOLUME_DOWN_KEY = ReadSettingsString(ID_SET_HK_VOL_DOWN, cfg.hotkeys.VOLUME_DOWN_KEY);
+
+        nlohmann::json newHumanizer = cfg.humanizer;
+        if (newHumanizer != oldHumanizer)
+            cfg.activeHumanizerPreset = "Custom (Modified)";
+
+        cfg.validate();
+        cfg.saveToFile("config.json");
+
+        if (HWND status = GetDlgItem(hwnd, ID_SET_STATUS))
+            SetWindowTextW(status, L"Saved successfully. Restart MIDI++ to apply all changes.");
+        std::cout << "[Settings] Configuration saved. Restart required for all changes.\n";
+        return true;
+    }
+    catch (const std::exception& ex) {
+        try { cfg.loadFromFile("config.json"); } catch (...) {}
+        PopulateSettingsControls(hwnd);
+        MessageBoxW(hwnd, Utf8ToWide(ex.what()).c_str(), L"Settings Error", MB_OK | MB_ICONERROR);
+        return false;
+    }
+}
+
+static void ShowSettingsPage(int pageIndex) {
+    pageIndex = std::clamp(pageIndex, 0, 3);
+    for (int i = 0; i < 4; ++i) {
+        if (g_settingsPages[i])
+            ShowWindow(g_settingsPages[i], i == pageIndex ? SW_SHOW : SW_HIDE);
+    }
+}
+
+static bool RestartMidiPlusPlus(HWND owner) {
+    wchar_t exePath[32768]{};
+    const DWORD len = GetModuleFileNameW(nullptr, exePath, static_cast<DWORD>(std::size(exePath)));
+    if (len == 0 || len >= std::size(exePath)) {
+        MessageBoxW(owner, L"Could not determine the MIDI++ executable path.", L"Restart MIDI++", MB_OK | MB_ICONERROR);
+        return false;
+    }
+
+    // Delay the new launch very briefly so the current process can release the
+    // single-instance mutex before the replacement MIDI++ starts.
+    std::wstring command = L"cmd.exe /D /S /C \"timeout /t 1 /nobreak >nul & start \"\" \"" +
+        std::wstring(exePath) + L"\"\"";
+
+    STARTUPINFOW si{};
+    si.cb = sizeof(si);
+    PROCESS_INFORMATION pi{};
+    if (!CreateProcessW(nullptr, command.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW,
+        nullptr, nullptr, &si, &pi)) {
+        MessageBoxW(owner, L"Could not schedule MIDI++ to restart.", L"Restart MIDI++", MB_OK | MB_ICONERROR);
+        return false;
+    }
+
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+    PostMessage(g_hMainWnd, WM_CLOSE, 0, 0);
+    return true;
+}
+
+static LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    switch (msg) {
+    case WM_CREATE:
+    {
+        g_hSettingsTab = CreateWindowExW(0, WC_TABCONTROLW, L"",
+            WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS | WS_TABSTOP,
+            10, 10, 684, 500, hwnd, reinterpret_cast<HMENU>(ID_SET_TAB), g_hInst, nullptr);
+        SetDefaultGuiFont(g_hSettingsTab);
+
+        const wchar_t* tabs[] = { L"General", L"Playback", L"Humanizer", L"Hotkeys" };
+        for (int i = 0; i < 4; ++i) {
+            TCITEMW item{};
+            item.mask = TCIF_TEXT;
+            item.pszText = const_cast<LPWSTR>(tabs[i]);
+            TabCtrl_InsertItem(g_hSettingsTab, i, &item);
+        }
+
+        for (int i = 0; i < 4; ++i) {
+            g_settingsPages[i] = CreateWindowExW(WS_EX_CONTROLPARENT, L"static", L"",
+                WS_CHILD | (i == 0 ? WS_VISIBLE : 0),
+                22, 45, 660, 452, hwnd, nullptr, g_hInst, nullptr);
+        }
+
+        // General page
+        HWND p = g_settingsPages[0];
+        CreateWindowW(L"button", L"Interface / MIDI", WS_CHILD | WS_VISIBLE | BS_GROUPBOX,
+            8, 5, 315, 140, p, nullptr, g_hInst, nullptr);
+        CreateSettingsCheck(p, ID_SET_ALWAYS_TOP, L"Always on top", false, 20, 28, 140);
+        CreateSettingsLabel(p, L"Window opacity (100-255)", 20, 58, 175);
+        CreateSettingsIntEdit(p, ID_SET_OPACITY, 255, 205, 55, 80);
+        CreateSettingsCheck(p, ID_SET_FILTER_DRUMS, L"Filter MIDI channel 10 drums", true, 20, 88, 240);
+        CreateSettingsLabel(p, L"Browser sort and last folder are remembered automatically.", 20, 116, 285);
+
+        CreateWindowW(L"button", L"Auto Transpose", WS_CHILD | WS_VISIBLE | BS_GROUPBOX,
+            333, 5, 315, 140, p, nullptr, g_hInst, nullptr);
+        CreateSettingsCheck(p, ID_SET_AUTO_TRANSPOSE, L"Enable automatic transpose keys", false, 345, 28, 250);
+        CreateSettingsLabel(p, L"Transpose up key", 345, 61, 120);
+        CreateSettingsEdit(p, ID_SET_TRANSPOSE_UP, L"VK_UP", 485, 58, 120);
+        CreateSettingsLabel(p, L"Transpose down key", 345, 94, 130);
+        CreateSettingsEdit(p, ID_SET_TRANSPOSE_DOWN, L"VK_DOWN", 485, 91, 120);
+
+        CreateWindowW(L"button", L"Volume", WS_CHILD | WS_VISIBLE | BS_GROUPBOX,
+            8, 155, 640, 205, p, nullptr, g_hInst, nullptr);
+        const int gx1 = 20, gx2 = 335, ev1 = 205, ev2 = 520;
+        CreateSettingsLabel(p, L"Minimum volume", gx1, 183, 170);
+        CreateSettingsIntEdit(p, ID_SET_VOL_MIN, 10, ev1, 180);
+        CreateSettingsLabel(p, L"Maximum volume", gx1, 216, 170);
+        CreateSettingsIntEdit(p, ID_SET_VOL_MAX, 200, ev1, 213);
+        CreateSettingsLabel(p, L"Initial volume", gx1, 249, 170);
+        CreateSettingsIntEdit(p, ID_SET_VOL_INITIAL, 100, ev1, 246);
+        CreateSettingsLabel(p, L"Volume step", gx2, 183, 160);
+        CreateSettingsIntEdit(p, ID_SET_VOL_STEP, 10, ev2, 180);
+        CreateSettingsLabel(p, L"Adjustment interval (ms)", gx2, 216, 175);
+        CreateSettingsIntEdit(p, ID_SET_VOL_INTERVAL, 50, ev2, 213, 85);
+        CreateSettingsLabel(p, L"These values affect automatic volume/velocity handling after restart.", 20, 298, 560);
+
+        // Playback page
+        p = g_settingsPages[1];
+        CreateWindowW(L"button", L"Note Handling", WS_CHILD | WS_VISIBLE | BS_GROUPBOX,
+            8, 5, 640, 120, p, nullptr, g_hInst, nullptr);
+        CreateSettingsLabel(p, L"Stacked same-note handling", 20, 34, 190);
+        HWND noteMode = CreateSettingsCombo(p, ID_SET_NOTE_MODE, 230, 30, 180);
+        SendMessageW(noteMode, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"FIFO"));
+        SendMessageW(noteMode, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"LIFO"));
+        SendMessageW(noteMode, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"No handling"));
+        CreateSettingsLabel(p, L"Repeated same-note gap (ms)", 20, 72, 190);
+        CreateSettingsIntEdit(p, ID_SET_REPEAT_GAP, 15, 230, 69, 85);
+
+        CreateWindowW(L"button", L"Playability Optimizer", WS_CHILD | WS_VISIBLE | BS_GROUPBOX,
+            8, 135, 640, 190, p, nullptr, g_hInst, nullptr);
+        CreateSettingsCheck(p, ID_SET_PLAYABILITY, L"Enable playability optimizer", false, 20, 160, 230);
+        CreateSettingsLabel(p, L"Maximum simultaneous notes", 20, 198, 190);
+        CreateSettingsIntEdit(p, ID_SET_PLAY_MAX_TOTAL, 10, 230, 195, 85);
+        CreateSettingsLabel(p, L"Maximum notes per hand", 20, 231, 190);
+        CreateSettingsIntEdit(p, ID_SET_PLAY_MAX_HAND, 5, 230, 228, 85);
+        CreateSettingsLabel(p, L"Simultaneous window (ms)", 20, 264, 190);
+        CreateSettingsIntEdit(p, ID_SET_PLAY_WINDOW, 8, 230, 261, 85);
+        CreateSettingsLabel(p, L"Limits: 1-10 total, 1-5 per hand, 0-50 ms window.", 335, 198, 285);
+        CreateSettingsLabel(p, L"Changes here do not alter the overlap workaround; that behavior is unchanged.", 20, 300, 600);
+
+        // Humanizer page
+        p = g_settingsPages[2];
+        CreateWindowW(L"button", L"Humanizer Timing", WS_CHILD | WS_VISIBLE | BS_GROUPBOX,
+            8, 5, 322, 430, p, nullptr, g_hInst, nullptr);
+        CreateSettingsCheck(p, ID_SET_HUM_ENABLED, L"Enable Humanizer", true, 20, 28, 180);
+        CreateSettingsCheck(p, ID_SET_HUM_SEQ, L"Sequential articulation", true, 20, 54, 200);
+        CreateSettingsCheck(p, ID_SET_HUM_RANDOM, L"Different timing each play", false, 20, 80, 220);
+        int hy = 112;
+        const int hrow = 30;
+        CreateSettingsLabel(p, L"Chord detection window", 20, hy, 180); CreateSettingsIntEdit(p, ID_SET_HUM_CHORD_WINDOW, 50, 230, hy - 3, 70); hy += hrow;
+        CreateSettingsLabel(p, L"Chord press min spread", 20, hy, 180); CreateSettingsIntEdit(p, ID_SET_HUM_PRESS_MIN, 32, 230, hy - 3, 70); hy += hrow;
+        CreateSettingsLabel(p, L"Chord press max spread", 20, hy, 180); CreateSettingsIntEdit(p, ID_SET_HUM_PRESS_MAX, 78, 230, hy - 3, 70); hy += hrow;
+        CreateSettingsLabel(p, L"Chord release min spread", 20, hy, 180); CreateSettingsIntEdit(p, ID_SET_HUM_RELEASE_MIN, 25, 230, hy - 3, 70); hy += hrow;
+        CreateSettingsLabel(p, L"Chord release max spread", 20, hy, 180); CreateSettingsIntEdit(p, ID_SET_HUM_RELEASE_MAX, 64, 230, hy - 3, 70); hy += hrow;
+        CreateSettingsLabel(p, L"Simultaneous chance %", 20, hy, 180); CreateSettingsIntEdit(p, ID_SET_HUM_SIM_CHANCE, 10, 230, hy - 3, 70); hy += hrow;
+        CreateSettingsLabel(p, L"Sequential trigger window", 20, hy, 180); CreateSettingsIntEdit(p, ID_SET_HUM_SEQ_TRIGGER, 200, 230, hy - 3, 70); hy += hrow;
+        CreateSettingsLabel(p, L"Sequential min gap", 20, hy, 180); CreateSettingsIntEdit(p, ID_SET_HUM_SEQ_MIN, 40, 230, hy - 3, 70); hy += hrow;
+        CreateSettingsLabel(p, L"Sequential max gap", 20, hy, 180); CreateSettingsIntEdit(p, ID_SET_HUM_SEQ_MAX, 100, 230, hy - 3, 70);
+
+        CreateWindowW(L"button", L"Humanizer 2.0 Advanced", WS_CHILD | WS_VISIBLE | BS_GROUPBOX,
+            338, 5, 310, 430, p, nullptr, g_hInst, nullptr);
+        CreateSettingsCheck(p, ID_SET_HUM_BETTER_HANDS, L"Better hand inference", true, 350, 32, 240);
+        CreateSettingsCheck(p, ID_SET_HUM_TEMPO, L"Tempo-aware timing", false, 350, 62, 240);
+        CreateSettingsCheck(p, ID_SET_HUM_MELODY, L"Melody-priority timing", false, 350, 92, 240);
+        CreateSettingsCheck(p, ID_SET_HUM_VELOCITY, L"Velocity humanizer", false, 350, 122, 240);
+        CreateSettingsLabel(p, L"Velocity mode", 350, 160, 110);
+        HWND velMode = CreateSettingsCombo(p, ID_SET_HUM_VEL_MODE, 470, 156, 155);
+        SendMessageW(velMode, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Balanced"));
+        SendMessageW(velMode, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Melody focus"));
+        SendMessageW(velMode, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Chord focus"));
+        CreateSettingsLabel(p, L"Velocity variation", 350, 198, 115);
+        CreateSettingsIntEdit(p, ID_SET_HUM_VEL_VARIATION, 6, 500, 195, 80);
+        CreateSettingsLabel(p, L"0-24", 585, 198, 50);
+        CreateSettingsLabel(p, L"Preset management is still available from the main Humanizer button.", 350, 245, 270);
+        CreateSettingsLabel(p, L"Settings saved here take effect after restarting MIDI++.", 350, 285, 270);
+
+        // Hotkeys page
+        p = g_settingsPages[3];
+        CreateWindowW(L"button", L"Keyboard Hotkeys", WS_CHILD | WS_VISIBLE | BS_GROUPBOX,
+            8, 5, 640, 330, p, nullptr, g_hInst, nullptr);
+        int ky = 35;
+        const int krow = 39;
+        auto keyRow = [&](const wchar_t* label, int id, const wchar_t* def) {
+            CreateSettingsLabel(p, label, 25, ky, 180);
+            CreateSettingsEdit(p, id, def, 230, ky - 3, 160);
+            ky += krow;
+        };
+        keyRow(L"Play / Pause", ID_SET_HK_PLAY, L"VK_F1");
+        keyRow(L"Rewind", ID_SET_HK_REW, L"VK_F2");
+        keyRow(L"Skip", ID_SET_HK_SKIP, L"VK_F3");
+        keyRow(L"Panic / Release", ID_SET_HK_PANIC, L"VK_F4");
+        keyRow(L"Sustain", ID_SET_HK_SUSTAIN, L"VK_SPACE");
+        keyRow(L"Volume Up", ID_SET_HK_VOL_UP, L"VK_RIGHT");
+        keyRow(L"Volume Down", ID_SET_HK_VOL_DOWN, L"VK_LEFT");
+        CreateSettingsLabel(p, L"Use VK_ names. F5 remains reserved for Full App / Overlay mode.", 25, 355, 550);
+
+        HWND save = CreateWindowW(L"button", L"Save Settings", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON,
+            245, 525, 105, 30, hwnd, reinterpret_cast<HMENU>(ID_SET_SAVE), g_hInst, nullptr);
+        HWND reset = CreateWindowW(L"button", L"Reset Defaults", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+            355, 525, 105, 30, hwnd, reinterpret_cast<HMENU>(ID_SET_RESET), g_hInst, nullptr);
+        HWND restart = CreateWindowW(L"button", L"Restart MIDI++", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+            465, 525, 105, 30, hwnd, reinterpret_cast<HMENU>(ID_SET_RESTART), g_hInst, nullptr);
+        HWND close = CreateWindowW(L"button", L"Close", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+            575, 525, 105, 30, hwnd, reinterpret_cast<HMENU>(ID_SET_CLOSE), g_hInst, nullptr);
+        SetDefaultGuiFont(save); SetDefaultGuiFont(reset); SetDefaultGuiFont(restart); SetDefaultGuiFont(close);
+
+        HWND status = CreateWindowW(L"static", L"", WS_CHILD | WS_VISIBLE | SS_LEFT,
+            15, 528, 220, 42, hwnd, reinterpret_cast<HMENU>(ID_SET_STATUS), g_hInst, nullptr);
+        SetDefaultGuiFont(status);
+
+        PopulateSettingsControls(hwnd);
+        ShowSettingsPage(0);
+        return 0;
+    }
+
+    case WM_NOTIFY:
+        if (reinterpret_cast<LPNMHDR>(lParam)->idFrom == ID_SET_TAB &&
+            reinterpret_cast<LPNMHDR>(lParam)->code == TCN_SELCHANGE) {
+            const int index = TabCtrl_GetCurSel(g_hSettingsTab);
+            ShowSettingsPage(index);
+            return 0;
+        }
+        break;
+
+    case WM_COMMAND:
+        if (HIWORD(wParam) == BN_CLICKED) {
+            switch (LOWORD(wParam)) {
+            case ID_SET_SAVE:
+                SaveSettingsFromControls(hwnd);
+                return 0;
+            case ID_SET_RESET:
+                if (MessageBoxW(hwnd,
+                    L"Reset MIDI++ configuration to its built-in defaults?\n\nThis also clears recent MIDI history and custom config values.",
+                    L"Reset Settings", MB_YESNO | MB_ICONWARNING) == IDYES) {
+                    try {
+                        auto& cfg = midi::Config::getInstance();
+                        cfg.setDefaults();
+                        cfg.saveToFile("config.json");
+                        PopulateSettingsControls(hwnd);
+                        SetWindowTextW(GetDlgItem(hwnd, ID_SET_STATUS),
+                            L"Defaults saved. Restart MIDI++ to apply them.");
+                        std::cout << "[Settings] Defaults restored. Restart required.\n";
+                    }
+                    catch (const std::exception& ex) {
+                        MessageBoxW(hwnd, Utf8ToWide(ex.what()).c_str(), L"Reset Settings", MB_OK | MB_ICONERROR);
+                    }
+                }
+                return 0;
+            case ID_SET_RESTART:
+                if (SaveSettingsFromControls(hwnd))
+                    RestartMidiPlusPlus(hwnd);
+                return 0;
+            case ID_SET_CLOSE:
+                DestroyWindow(hwnd);
+                return 0;
+            }
+        }
+        break;
+
+    case WM_CLOSE:
+        DestroyWindow(hwnd);
+        return 0;
+
+    case WM_DESTROY:
+        g_hSettingsWnd = nullptr;
+        g_hSettingsTab = nullptr;
+        for (HWND& page : g_settingsPages)
+            page = nullptr;
+        return 0;
+    }
+    return DefWindowProcW(hwnd, msg, wParam, lParam);
+}
+
+static void ShowSettingsPopup(HWND owner) {
+    if (g_hSettingsWnd && IsWindow(g_hSettingsWnd)) {
+        ShowWindow(g_hSettingsWnd, SW_SHOWNORMAL);
+        SetForegroundWindow(g_hSettingsWnd);
+        return;
+    }
+
+    static bool registered = false;
+    if (!registered) {
+        WNDCLASSEXW wc{};
+        wc.cbSize = sizeof(wc);
+        wc.lpfnWndProc = SettingsWndProc;
+        wc.hInstance = g_hInst;
+        wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
+        wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_BTNFACE + 1);
+        wc.lpszClassName = L"MIDIPlusPlusSettingsPopup";
+        if (!RegisterClassExW(&wc) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS)
+            return;
+        registered = true;
+    }
+
+    g_hSettingsWnd = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_DLGMODALFRAME,
+        L"MIDIPlusPlusSettingsPopup", L"MIDI++ Custom Build - Settings",
+        WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU,
+        CW_USEDEFAULT, CW_USEDEFAULT, 720, 605,
+        owner, nullptr, g_hInst, nullptr);
+    if (g_hSettingsWnd) {
+        CenterPopup(g_hSettingsWnd, owner);
+        ShowWindow(g_hSettingsWnd, SW_SHOW);
+        SetForegroundWindow(g_hSettingsWnd);
     }
 }
 
@@ -2777,26 +3381,26 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
 
         HWND hChkAlwaysOnTop = CreateWindowW(L"button", L"Always On Top",
             WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
-            Layout::CFG_X + 10, Layout::CFG_Y + 25, 120, 20,
+            Layout::CFG_X + 10, Layout::CFG_Y + 25, 105, 20,
             hWnd, reinterpret_cast<HMENU>(ID_CHK_TOP), g_hInst, nullptr);
         bool alwaysOnTop = midi::Config::getInstance().ui.alwaysOnTop;
         SendMessage(hChkAlwaysOnTop, BM_SETCHECK, alwaysOnTop ? BST_CHECKED : BST_UNCHECKED, 0);
         SetAlwaysOnTop(hWnd, alwaysOnTop);
 
-        HWND hChkRandomSong = CreateWindowW(L"button", L"Shuffle Play",
+        HWND hChkRandomSong = CreateWindowW(L"button", L"Shuffle",
             WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
-            Layout::CFG_X + 140, Layout::CFG_Y + 25, 115, 20,
+            Layout::CFG_X + 118, Layout::CFG_Y + 25, 80, 20,
             hWnd, reinterpret_cast<HMENU>(ID_CHK_RANDOM_SONG), g_hInst, nullptr);
         SendMessage(hChkRandomSong, BM_SETCHECK, g_randomSongEnabled ? BST_CHECKED : BST_UNCHECKED, 0);
 
         HWND hStaticOpacity = CreateWindowW(L"static", L"Opacity:",
             WS_CHILD | WS_VISIBLE,
-            Layout::CFG_X + 255, Layout::CFG_Y + 25, 60, 20,
+            Layout::CFG_X + 202, Layout::CFG_Y + 25, 55, 20,
             hWnd, nullptr, g_hInst, nullptr);
 
         HWND hOpacitySlider = CreateWindowExW(0, TRACKBAR_CLASSW, L"",
             WS_CHILD | WS_VISIBLE | TBS_AUTOTICKS,
-            Layout::CFG_X + 310, Layout::CFG_Y + 20, 120, 30,
+            Layout::CFG_X + 255, Layout::CFG_Y + 20, 85, 30,
             hWnd, reinterpret_cast<HMENU>(ID_SLIDER_OPACITY), g_hInst, nullptr);
         SendMessage(hOpacitySlider, TBM_SETRANGE, TRUE, MAKELPARAM(100, 255));
         SendMessage(hOpacitySlider, TBM_SETTICFREQ, 15, 0);
@@ -2806,16 +3410,20 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
             L"edit",
             L"255",
             WS_CHILD | WS_VISIBLE | ES_READONLY | ES_CENTER,
-            Layout::CFG_X + 445, Layout::CFG_Y + 25, 40, 20,
+            Layout::CFG_X + 344, Layout::CFG_Y + 25, 38, 20,
             hWnd, nullptr, g_hInst, nullptr);
         HWND hPrevSongBtn = CreateWindowW(L"button", L"Prev",
             WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
-            Layout::CFG_X + 495, Layout::CFG_Y + 25, 40, 20,
+            Layout::CFG_X + 390, Layout::CFG_Y + 25, 40, 20,
             hWnd, reinterpret_cast<HMENU>(ID_BTN_PREV_SONG), g_hInst, nullptr);
         HWND hNextSongBtn = CreateWindowW(L"button", L"Next",
             WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
-            Layout::CFG_X + 495 + 45, Layout::CFG_Y + 25, 40, 20,
+            Layout::CFG_X + 435, Layout::CFG_Y + 25, 40, 20,
             hWnd, reinterpret_cast<HMENU>(ID_BTN_NEXT_SONG), g_hInst, nullptr);
+        CreateWindowW(L"button", L"Settings",
+            WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
+            Layout::CFG_X + 485, Layout::CFG_Y + 22, 95, 25,
+            hWnd, reinterpret_cast<HMENU>(ID_BTN_SETTINGS), g_hInst, nullptr);
 
         // Details Group
         CreateWindowW(L"button", L"Details",
@@ -2885,6 +3493,9 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
         AddToolTip(hWnd, ID_BTN_TRANSPOSEOUT, L"Transpose notes that would otherwise fall outside the selected keyboard range.");
         AddToolTip(hWnd, ID_BTN_PLAYABILITY, L"Optional virtual-piano optimizer. Limits simultaneous physical attacks to 5 notes per hand and 10 total while preserving bass, top voice, velocity, and likely melody importance.");
         AddToolTip(hWnd, ID_BTN_OVERLAY, L"Switch between the full MIDI++ interface and the in-game overlay. F5 toggles modes from anywhere.");
+        AddToolTip(hWnd, ID_BTN_SETTINGS, L"Edit MIDI++, playback, Humanizer and hotkey settings without opening config.json.");
+        AddToolTip(hWnd, ID_BTN_MIDI_UP, L"Go up one MIDI folder. Backspace also works while the MIDI list is focused.");
+        AddToolTip(hWnd, ID_BTN_SEARCH_CLEAR, L"Clear the MIDI search and return to the current folder.");
         AddToolTip(hWnd, ID_BTN_MIDI2QWERTY, L"Use a physical MIDI input device to send QWERTY piano keys.");
         AddToolTip(hWnd, ID_BTN_MIDICONNECT, L"Send loaded MIDI (and optional live MIDI input) directly through the Visual Pianos MidiConnect protocol.");
         AddToolTip(hWnd, ID_SLIDER_SEEK, L"Drag to seek directly through the loaded song.");
@@ -3086,6 +3697,11 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
         case ID_BTN_OVERLAY:
             if (code == BN_CLICKED)
                 SetOverlayVisible(!g_overlayVisible);
+            break;
+
+        case ID_BTN_SETTINGS:
+            if (code == BN_CLICKED)
+                ShowSettingsPopup(hWnd);
             break;
 
         case ID_BTN_HUMANIZER:
@@ -3710,6 +4326,8 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
         UnregisterHotKey(hWnd, OVERLAY_HOTKEY_ID);
         if (g_hOverlayWnd && IsWindow(g_hOverlayWnd))
             DestroyWindow(g_hOverlayWnd);
+        if (g_hSettingsWnd && IsWindow(g_hSettingsWnd))
+            DestroyWindow(g_hSettingsWnd);
         if (g_player) {
             g_player->should_stop.store(true, std::memory_order_release);
             SetEvent(g_player->command_event);
