@@ -371,7 +371,7 @@ namespace midi {
         if (j.contains("recentMidiFiles") && j.at("recentMidiFiles").is_array()) {
             ui.recentMidiFiles.clear();
             for (const auto& item : j.at("recentMidiFiles")) {
-                if (item.is_string() && ui.recentMidiFiles.size() < 5)
+                if (item.is_string() && ui.recentMidiFiles.size() < 10)
                     ui.recentMidiFiles.push_back(item.get<std::string>());
             }
         }
@@ -603,14 +603,18 @@ namespace midi {
         midi = { true }; // FILTER_DRUMS
 
         // Playback settings
-        playback.REPEATED_NOTE_GAP_MS = 15;
+        playback = PlaybackSettings{};
 
         // Hotkey settings. F4 is a safe panic instead of terminating MIDI++.
         hotkeys = HotkeySettings{};
 
-        ui.opacity = 255;
-        ui.lastMidiDirectory = "midi";
-        ui.recentMidiFiles.clear();
+        // UI settings
+        ui = UISettings{};
+
+        // Reset lists/maps that should not survive a full defaults reset.
+        playlistFiles.clear();
+        controls.clear();
+        key_mappings.clear();
 
         // Setup default LIMITED key mappings
         key_mappings["LIMITED"] = {
