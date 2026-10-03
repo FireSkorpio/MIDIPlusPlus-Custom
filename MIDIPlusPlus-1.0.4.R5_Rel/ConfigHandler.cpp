@@ -359,6 +359,7 @@ namespace midi {
         j = nlohmann::json{
             {"alwaysOnTop", ui.alwaysOnTop},
             {"opacity", ui.opacity},
+            {"midiSortMode", ui.midiSortMode},
             {"lastMidiDirectory", ui.lastMidiDirectory},
             {"recentMidiFiles", ui.recentMidiFiles}
         };
@@ -367,6 +368,7 @@ namespace midi {
     void from_json(const nlohmann::json& j, UISettings& ui) {
         if (j.contains("alwaysOnTop")) j.at("alwaysOnTop").get_to(ui.alwaysOnTop);
         if (j.contains("opacity")) j.at("opacity").get_to(ui.opacity);
+        if (j.contains("midiSortMode")) j.at("midiSortMode").get_to(ui.midiSortMode);
         if (j.contains("lastMidiDirectory")) j.at("lastMidiDirectory").get_to(ui.lastMidiDirectory);
         if (j.contains("recentMidiFiles") && j.at("recentMidiFiles").is_array()) {
             ui.recentMidiFiles.clear();
@@ -376,6 +378,7 @@ namespace midi {
             }
         }
         ui.opacity = std::clamp(ui.opacity, 100, 255);
+        ui.midiSortMode = std::clamp(ui.midiSortMode, 0, 3);
     }
 
     void to_json(nlohmann::json& j, const HotkeySettings& h) {
