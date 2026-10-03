@@ -2203,6 +2203,11 @@ void VirtualPianoPlayer::slow_down() {
     adjust_playback_speed(1.0 / 1.1);
 }
 
+void VirtualPianoPlayer::set_playback_speed(double speed) {
+    current_speed = std::clamp(speed, 0.25, 2.0);
+    time_factor = inv_cpu_freq * 1e9 * current_speed;
+}
+
 void VirtualPianoPlayer::adjust_playback_speed(double factor) {
     unsigned long long now_tsc = __rdtsc();
     if (!playback_started.load(std::memory_order_relaxed)) {
