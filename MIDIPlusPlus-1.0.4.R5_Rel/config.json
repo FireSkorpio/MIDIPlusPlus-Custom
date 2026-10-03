@@ -193,6 +193,7 @@
     "UI_SETTINGS": {
         "alwaysOnTop": true,
         "opacity": 255,
+        "midiSortMode": 0,
         "lastMidiDirectory": "midi",
         "recentMidiFiles": []
     },
