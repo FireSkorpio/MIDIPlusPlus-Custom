@@ -96,6 +96,11 @@ static bool g_randomSongEnabled = false;
 static std::wstring g_currentLoadedMidiPath;
 static bool g_seekDragging = false;
 static HWND g_hToolTip = nullptr;
+static HWND g_hMidiPathLabel = nullptr;
+static HWND g_hSettingsWnd = nullptr;
+static HWND g_hSettingsTab = nullptr;
+static HWND g_settingsPages[4] = { nullptr, nullptr, nullptr, nullptr };
+static std::wstring g_selectedMidiBrowserPath;
 
 // In-game overlay state. The overlay is another view over the same
 // VirtualPianoPlayer instance; it never starts a second playback engine.
@@ -193,6 +198,9 @@ enum ControlID {
     ID_LB_MIDI,
     ID_CB_RECENT,
     ID_EDIT_MIDI_SEARCH,
+    ID_BTN_MIDI_UP,
+    ID_BTN_SEARCH_CLEAR,
+    ID_STATIC_MIDI_PATH,
 
     // Basic Playback Group
     ID_GRP_PLAY,
@@ -232,7 +240,8 @@ enum ControlID {
     // Config
     ID_GRP_CONFIG,
     ID_CHK_TOP,
-    ID_CHK_RANDOM_SONG,   
+    ID_CHK_RANDOM_SONG,
+    ID_BTN_SETTINGS,
     ID_SLIDER_OPACITY, 
 
     // Details
@@ -546,8 +555,39 @@ static void PopulateMidiList() {
 
     ReleaseDC(g_lbMidi, hdc);
     SendMessage(g_lbMidi, LB_SETHORIZONTALEXTENT, maxWidth, 0);
-    if (SendMessage(g_lbMidi, LB_GETCOUNT, 0, 0) > 0)
-        SendMessage(g_lbMidi, LB_SETCURSEL, 0, 0);
+
+    int selectIndex = -1;
+    const std::wstring preferredPath = !g_selectedMidiBrowserPath.empty()
+        ? g_selectedMidiBrowserPath
+        : g_currentLoadedMidiPath;
+    if (!preferredPath.empty()) {
+        for (size_t i = 0; i < g_midiItems.size(); ++i) {
+            if (_wcsicmp(g_midiItems[i].fullPath.c_str(), preferredPath.c_str()) == 0) {
+                selectIndex = static_cast<int>(i);
+                break;
+            }
+        }
+    }
+    const LRESULT count = SendMessage(g_lbMidi, LB_GETCOUNT, 0, 0);
+    if (selectIndex < 0 && count > 0)
+        selectIndex = 0;
+    if (selectIndex >= 0)
+        SendMessage(g_lbMidi, LB_SETCURSEL, selectIndex, 0);
+
+    if (g_hMidiPathLabel) {
+        const std::wstring query = GetMidiBrowserSearchText();
+        std::wstring label;
+        if (!query.empty()) {
+            label = L"Search results: " + std::to_wstring(g_midiItems.size());
+        }
+        else {
+            std::error_code relEc;
+            const auto root = midi::Config::resolvePath("midi");
+            auto relative = std::filesystem::relative(g_currentMidiDir, root, relEc);
+            label = relEc || relative.empty() || relative == L"." ? L"midi\\" : (L"midi\\" + relative.wstring() + L"\\");
+        }
+        SetWindowTextW(g_hMidiPathLabel, label.c_str());
+    }
 }
 
 static std::wstring GetSelectedMidiFullPath() {
@@ -599,7 +639,7 @@ static void RememberRecentMidi(HWND hWnd, const std::wstring& path) {
     auto& recent = cfg.ui.recentMidiFiles;
     recent.erase(std::remove(recent.begin(), recent.end(), utf8), recent.end());
     recent.insert(recent.begin(), utf8);
-    if (recent.size() > 5) recent.resize(5);
+    if (recent.size() > 10) recent.resize(10);
     try { cfg.saveToFile("config.json"); } catch (...) {}
     RefreshRecentMidiCombo(hWnd);
 }
@@ -1094,18 +1134,30 @@ static LRESULT CALLBACK MidiListSubclassProc(HWND hwnd, UINT msg, WPARAM wParam,
     {
     case WM_RBUTTONDOWN:
     {
-        POINT pt;
-        pt.x = GET_X_LPARAM(lParam);
-        pt.y = GET_Y_LPARAM(lParam);
-        int index = static_cast<int>(SendMessage(hwnd, LB_ITEMFROMPOINT, 0, MAKELPARAM(pt.x, pt.y)));
-        if (index != LB_ERR) {
-            ToggleFavorite(index);
+        POINT pt{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+        const LRESULT hit = SendMessage(hwnd, LB_ITEMFROMPOINT, 0, MAKELPARAM(pt.x, pt.y));
+        if (HIWORD(hit) == 0) {
+            const int index = LOWORD(hit);
+            if (index >= 0 && index < static_cast<int>(g_midiItems.size()))
+                ToggleFavorite(index);
         }
         return 0;
     }
+    case WM_KEYDOWN:
+        if (wParam == VK_RETURN) {
+            SendMessage(GetParent(hwnd), WM_COMMAND, MAKEWPARAM(ID_LB_MIDI, LBN_DBLCLK),
+                reinterpret_cast<LPARAM>(hwnd));
+            return 0;
+        }
+        if (wParam == VK_BACK) {
+            SendMessage(GetParent(hwnd), WM_COMMAND, MAKEWPARAM(ID_BTN_MIDI_UP, BN_CLICKED), 0);
+            return 0;
+        }
+        break;
     default:
-        return DefSubclassProc(hwnd, msg, wParam, lParam);
+        break;
     }
+    return DefSubclassProc(hwnd, msg, wParam, lParam);
 }
 
 static bool LoadMidiFilePath(HWND owner, const std::wstring& wpath, bool preserveSession) {
@@ -2484,7 +2536,7 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
     {
         INITCOMMONCONTROLSEX icex = {};
         icex.dwSize = sizeof(icex);
-        icex.dwICC = ICC_BAR_CLASSES;
+        icex.dwICC = ICC_BAR_CLASSES | ICC_TAB_CLASSES;
         InitCommonControlsEx(&icex);
 
         // MIDI Files Group
@@ -2495,32 +2547,45 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
 
         HWND cbSort = CreateWindowW(L"combobox", nullptr,
             WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST,
-            Layout::FILES_X + 10, Layout::FILES_Y + 20, 130, 110,
+            Layout::FILES_X + 10, Layout::FILES_Y + 20, 110, 110,
             hWnd, reinterpret_cast<HMENU>(ID_CB_SORT), g_hInst, nullptr);
         SendMessageW(cbSort, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Name (A-Z)"));
         SendMessageW(cbSort, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Name (Z-A)"));
         SendMessageW(cbSort, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Date (Old-New)"));
         SendMessageW(cbSort, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Date (New-Old)"));
-        SendMessageW(cbSort, CB_SETCURSEL, 0, 0);
+        SendMessageW(cbSort, CB_SETCURSEL, std::clamp(midi::Config::getInstance().ui.midiSortMode, 0, 3), 0);
+        CreateWindowW(L"button", L"Up",
+            WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
+            Layout::FILES_X + 125, Layout::FILES_Y + 20, 40, 25,
+            hWnd, reinterpret_cast<HMENU>(ID_BTN_MIDI_UP), g_hInst, nullptr);
         CreateWindowW(L"button", L"Refresh",
             WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
-            Layout::FILES_X + 150, Layout::FILES_Y + 20, 70, 25,
+            Layout::FILES_X + 170, Layout::FILES_Y + 20, 50, 25,
             hWnd, reinterpret_cast<HMENU>(ID_BTN_REFRESH), g_hInst, nullptr);
         HWND searchEdit = CreateWindowExW(WS_EX_CLIENTEDGE, L"edit", L"",
             WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL,
-            Layout::FILES_X + 10, Layout::FILES_Y + 50, 210, 23,
+            Layout::FILES_X + 10, Layout::FILES_Y + 50, 155, 23,
             hWnd, reinterpret_cast<HMENU>(ID_EDIT_MIDI_SEARCH), g_hInst, nullptr);
         SetDefaultGuiFont(searchEdit);
         SendMessageW(searchEdit, EM_SETCUEBANNER, TRUE, reinterpret_cast<LPARAM>(L"Search all MIDI folders..."));
+        CreateWindowW(L"button", L"Clear",
+            WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
+            Layout::FILES_X + 170, Layout::FILES_Y + 49, 50, 25,
+            hWnd, reinterpret_cast<HMENU>(ID_BTN_SEARCH_CLEAR), g_hInst, nullptr);
+        g_hMidiPathLabel = CreateWindowW(L"static", L"midi\\",
+            WS_CHILD | WS_VISIBLE | SS_PATHELLIPSIS,
+            Layout::FILES_X + 10, Layout::FILES_Y + 77, 210, 18,
+            hWnd, reinterpret_cast<HMENU>(ID_STATIC_MIDI_PATH), g_hInst, nullptr);
+        SetDefaultGuiFont(g_hMidiPathLabel);
         g_lbMidi = CreateWindowW(L"listbox", nullptr,
-            WS_CHILD | WS_VISIBLE | LBS_NOTIFY | WS_VSCROLL | WS_HSCROLL | WS_BORDER | LBS_NOINTEGRALHEIGHT,
-            Layout::FILES_X + 10, Layout::FILES_Y + 78, 210, 282,
+            WS_CHILD | WS_VISIBLE | WS_TABSTOP | LBS_NOTIFY | WS_VSCROLL | WS_HSCROLL | WS_BORDER | LBS_NOINTEGRALHEIGHT,
+            Layout::FILES_X + 10, Layout::FILES_Y + 98, 210, 250,
             hWnd, reinterpret_cast<HMENU>(ID_LB_MIDI), g_hInst, nullptr);
         SetWindowSubclass(g_lbMidi, MidiListSubclassProc, 0, 0);
         CreateWindowW(L"static", L"Recent:", WS_CHILD | WS_VISIBLE,
-            Layout::FILES_X + 10, Layout::FILES_Y + 365, 48, 20, hWnd, nullptr, g_hInst, nullptr);
+            Layout::FILES_X + 10, Layout::FILES_Y + 355, 48, 20, hWnd, nullptr, g_hInst, nullptr);
         HWND recentCombo = CreateWindowW(L"combobox", nullptr, WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST,
-            Layout::FILES_X + 60, Layout::FILES_Y + 362, 160, 130,
+            Layout::FILES_X + 60, Layout::FILES_Y + 352, 160, 190,
             hWnd, reinterpret_cast<HMENU>(ID_CB_RECENT), g_hInst, nullptr);
         SetDefaultGuiFont(recentCombo);
 
@@ -2974,6 +3039,8 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
             if (code == CBN_SELCHANGE) {
                 HWND cb = GetDlgItem(hWnd, ID_CB_SORT);
                 int sel = static_cast<int>(SendMessage(cb, CB_GETCURSEL, 0, 0));
+                midi::Config::getInstance().ui.midiSortMode = std::clamp(sel, 0, 3);
+                try { midi::Config::getInstance().saveToFile("config.json"); } catch (...) {}
                 SortMidiItems();
                 PopulateMidiList();
             }
@@ -2984,7 +3051,35 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
                 ScanMidiSearchResults(GetMidiBrowserSearchText());
                 SortMidiItems();
                 PopulateMidiList();
+                RefreshOverlaySongList();
                 std::wcout << L"[Refresh] MIDI browser refreshed.\n";
+            }
+            break;
+
+        case ID_BTN_SEARCH_CLEAR:
+            if (code == BN_CLICKED) {
+                SetWindowTextW(GetDlgItem(hWnd, ID_EDIT_MIDI_SEARCH), L"");
+                SetFocus(g_lbMidi);
+            }
+            break;
+
+        case ID_BTN_MIDI_UP:
+            if (code == BN_CLICKED) {
+                if (!GetMidiBrowserSearchText().empty()) {
+                    SetWindowTextW(GetDlgItem(hWnd, ID_EDIT_MIDI_SEARCH), L"");
+                    break;
+                }
+                const auto root = midi::Config::resolvePath("midi");
+                std::error_code eqEc;
+                if (!std::filesystem::equivalent(g_currentMidiDir, root, eqEc)) {
+                    g_currentMidiDir = g_currentMidiDir.parent_path();
+                    auto& cfg = midi::Config::getInstance();
+                    cfg.ui.lastMidiDirectory = WideToUtf8(g_currentMidiDir.wstring());
+                    try { cfg.saveToFile("config.json"); } catch (...) {}
+                    ScanMidiFolder();
+                    SortMidiItems();
+                    PopulateMidiList();
+                }
             }
             break;
 
@@ -3116,6 +3211,12 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
             break;
 
         case ID_LB_MIDI:
+            if (code == LBN_SELCHANGE) {
+                int sel = static_cast<int>(SendMessage(g_lbMidi, LB_GETCURSEL, 0, 0));
+                if (sel >= 0 && sel < static_cast<int>(g_midiItems.size()))
+                    g_selectedMidiBrowserPath = g_midiItems[sel].fullPath;
+                break;
+            }
             if (code == LBN_DBLCLK) {
                 int sel = static_cast<int>(SendMessage(g_lbMidi, LB_GETCURSEL, 0, 0));
                 if (sel != LB_ERR && sel >= 0 && sel < static_cast<int>(g_midiItems.size())) {
@@ -3125,6 +3226,8 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
                             g_currentMidiDir = std::filesystem::path(g_currentMidiDir).parent_path();
                         else
                             g_currentMidiDir = item.fullPath;
+                        g_selectedMidiBrowserPath.clear();
+                        SetWindowTextW(GetDlgItem(hWnd, ID_EDIT_MIDI_SEARCH), L"");
                         auto& cfg = midi::Config::getInstance(); cfg.ui.lastMidiDirectory = WideToUtf8(g_currentMidiDir.wstring()); try { cfg.saveToFile("config.json"); } catch (...) {}
                         ScanMidiFolder(); SortMidiItems(); PopulateMidiList();
                     }
