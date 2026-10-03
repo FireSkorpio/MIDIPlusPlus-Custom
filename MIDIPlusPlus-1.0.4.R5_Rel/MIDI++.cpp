@@ -336,9 +336,14 @@ static std::wstring GetMidiBrowserSearchText() {
     if (!edit)
         return L"";
     const int len = GetWindowTextLengthW(edit);
-    std::wstring value(static_cast<size_t>(std::max(0, len)), L'\0');
-    if (len > 0)
-        GetWindowTextW(edit, value.data(), len + 1);
+    if (len <= 0)
+        return L"";
+    // Reserve room for the terminating NUL. Writing len + 1 characters into a
+    // string sized to len was an out-of-bounds write and could make the live
+    // MIDI search field behave unpredictably.
+    std::wstring value(static_cast<size_t>(len) + 1, L'\0');
+    GetWindowTextW(edit, value.data(), len + 1);
+    value.resize(static_cast<size_t>(len));
     return value;
 }
 
@@ -1136,7 +1141,10 @@ static bool LoadMidiFilePath(HWND owner, const std::wstring& wpath, bool preserv
         g_player->playback_started.store(false, std::memory_order_release);
         constexpr auto initialBuffer = std::chrono::milliseconds(50);
         g_player->total_adjusted_time = -initialBuffer;
-        g_player->current_speed = preserveSession ? previousSpeed : 1.0;
+        if (preserveSession)
+            g_player->set_playback_speed(previousSpeed);
+        else
+            g_player->set_playback_speed(1.0);
         g_player->buffer_index.store(0, std::memory_order_release);
         const unsigned long long nowTsc = __rdtsc();
         g_player->playback_start_time = nowTsc;
