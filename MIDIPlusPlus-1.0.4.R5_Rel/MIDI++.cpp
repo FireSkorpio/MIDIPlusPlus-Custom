@@ -97,6 +97,19 @@ static std::wstring g_currentLoadedMidiPath;
 static bool g_seekDragging = false;
 static HWND g_hToolTip = nullptr;
 
+// In-game overlay state. The overlay is another view over the same
+// VirtualPianoPlayer instance; it never starts a second playback engine.
+static HWND g_hOverlayWnd = nullptr;
+static HWND g_hOverlaySeek = nullptr;
+static HWND g_hOverlaySongCombo = nullptr;
+static HWND g_hOverlayTrackList = nullptr;
+static bool g_overlayVisible = false;
+static bool g_overlaySeekDragging = false;
+static std::vector<std::wstring> g_overlayMidiPaths;
+static std::wstring g_overlayTrackStateSignature;
+static constexpr int OVERLAY_HOTKEY_ID = 0x4D50; // "MP"
+static constexpr UINT_PTR OVERLAY_TIMER_ID = 0x4D51;
+
 // -----------------------------------------------------------------------------
 // Control layout constants
 // -----------------------------------------------------------------------------
@@ -210,6 +223,7 @@ enum ControlID {
     ID_BTN_TRANSPOSEOUT,
     ID_BTN_HUMANIZER,
     ID_BTN_PLAYABILITY,
+    ID_BTN_OVERLAY,
     ID_BTN_HELP,
     ID_CB_VELOCITY_CURVE,
     ID_SLIDER_SUSTAIN_CUTOFF,
@@ -261,6 +275,7 @@ static bool IsToggleButtonID(int id) {
     case ID_BTN_SUSTAIN:
     case ID_BTN_TRANSPOSEOUT:
     case ID_BTN_PLAYABILITY:
+    case ID_BTN_OVERLAY:
     case ID_BTN_MIDI2QWERTY:
     case ID_BTN_MIDICONNECT:
         return true;
@@ -1833,6 +1848,609 @@ static void ShowHelpPopup(HWND owner) {
     }
 }
 
+
+// -----------------------------------------------------------------------------
+// In-game overlay
+// -----------------------------------------------------------------------------
+enum OverlayControlID {
+    ID_OV_HIDE = 5001,
+    ID_OV_PLAY,
+    ID_OV_REW,
+    ID_OV_SKIP,
+    ID_OV_SPEEDDN,
+    ID_OV_SPEEDUP,
+    ID_OV_RESTART,
+    ID_OV_PANIC,
+    ID_OV_SEEK,
+    ID_OV_TIME,
+    ID_OV_SPEED,
+    ID_OV_STATUS,
+    ID_OV_SONG,
+    ID_OV_PREV,
+    ID_OV_NEXT,
+    ID_OV_TRACKS,
+    ID_OV_MUTE,
+    ID_OV_SOLO
+};
+
+static void RefreshOverlaySongList();
+static void RefreshOverlayTracks(bool force = false);
+static void SyncOverlayControls();
+static void SetOverlayVisible(bool visible);
+
+static std::wstring GetMidiTrackNameForOverlay(size_t trackIndex) {
+    if (!g_player || trackIndex >= g_player->midi_file.tracks.size())
+        return L"Track " + std::to_wstring(trackIndex + 1);
+
+    const auto& track = g_player->midi_file.tracks[trackIndex];
+    std::string trackName;
+    int program = -1;
+    for (const auto& evt : track.events) {
+        if (evt.status == 0xFF && evt.data1 == 0x03 && !evt.metaData.empty())
+            trackName.assign(evt.metaData.begin(), evt.metaData.end());
+        if ((evt.status & 0xF0) == 0xC0)
+            program = evt.data1 & 0x7F;
+    }
+
+    std::wstring result = trackName.empty()
+        ? (L"Track " + std::to_wstring(trackIndex + 1))
+        : Utf8ToWide(trackName);
+
+    if (program >= 0 && program < 128) {
+        result += L" - ";
+        result += Utf8ToWide(GM_NAMES[program]);
+    }
+    if (trackIndex < g_player->drum_flags.size() && g_player->drum_flags[trackIndex])
+        result += L" (Drums)";
+    return result;
+}
+
+static std::wstring BuildOverlayTrackStateSignature() {
+    if (!g_player || !g_player->midiFileSelected.load(std::memory_order_acquire))
+        return L"<none>";
+    std::wstring sig = g_currentLoadedMidiPath + L"|";
+    sig += std::to_wstring(g_player->midi_file.tracks.size());
+    for (size_t i = 0; i < g_player->midi_file.tracks.size(); ++i) {
+        const bool muted = i < g_player->trackMuted.size() && g_player->trackMuted[i] &&
+            g_player->trackMuted[i]->load(std::memory_order_acquire);
+        const bool soloed = i < g_player->trackSoloed.size() && g_player->trackSoloed[i] &&
+            g_player->trackSoloed[i]->load(std::memory_order_acquire);
+        sig += muted ? L"M" : L"-";
+        sig += soloed ? L"S" : L"-";
+    }
+    return sig;
+}
+
+static void RefreshOverlayTracks(bool force) {
+    if (!g_hOverlayTrackList)
+        return;
+
+    const std::wstring signature = BuildOverlayTrackStateSignature();
+    if (!force && signature == g_overlayTrackStateSignature)
+        return;
+
+    const int oldSelection = static_cast<int>(SendMessage(g_hOverlayTrackList, LB_GETCURSEL, 0, 0));
+    SendMessage(g_hOverlayTrackList, LB_RESETCONTENT, 0, 0);
+
+    if (!g_player || !g_player->midiFileSelected.load(std::memory_order_acquire)) {
+        SendMessageW(g_hOverlayTrackList, LB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"No MIDI loaded"));
+        EnableWindow(GetDlgItem(g_hOverlayWnd, ID_OV_MUTE), FALSE);
+        EnableWindow(GetDlgItem(g_hOverlayWnd, ID_OV_SOLO), FALSE);
+        g_overlayTrackStateSignature = signature;
+        return;
+    }
+
+    const size_t count = g_player->midi_file.tracks.size();
+    for (size_t i = 0; i < count; ++i) {
+        const bool muted = i < g_player->trackMuted.size() && g_player->trackMuted[i] &&
+            g_player->trackMuted[i]->load(std::memory_order_acquire);
+        const bool soloed = i < g_player->trackSoloed.size() && g_player->trackSoloed[i] &&
+            g_player->trackSoloed[i]->load(std::memory_order_acquire);
+        std::wstring line = L"[";
+        line += muted ? L"M" : L" ";
+        line += soloed ? L"S" : L" ";
+        line += L"] ";
+        line += std::to_wstring(i + 1);
+        line += L". ";
+        line += GetMidiTrackNameForOverlay(i);
+        SendMessageW(g_hOverlayTrackList, LB_ADDSTRING, 0, reinterpret_cast<LPARAM>(line.c_str()));
+    }
+
+    if (count > 0) {
+        const int selection = (oldSelection >= 0 && oldSelection < static_cast<int>(count)) ? oldSelection : 0;
+        SendMessage(g_hOverlayTrackList, LB_SETCURSEL, selection, 0);
+    }
+    EnableWindow(GetDlgItem(g_hOverlayWnd, ID_OV_MUTE), count > 0);
+    EnableWindow(GetDlgItem(g_hOverlayWnd, ID_OV_SOLO), count > 0);
+    g_overlayTrackStateSignature = signature;
+}
+
+static void RefreshOverlaySongList() {
+    if (!g_hOverlaySongCombo)
+        return;
+
+    g_overlayMidiPaths.clear();
+    SendMessage(g_hOverlaySongCombo, CB_RESETCONTENT, 0, 0);
+
+    const std::filesystem::path root = midi::Config::resolvePath("midi");
+    if (!std::filesystem::exists(root) || !std::filesystem::is_directory(root))
+        return;
+
+    struct OverlaySongEntry {
+        std::wstring display;
+        std::wstring fullPath;
+    };
+    std::vector<OverlaySongEntry> songs;
+
+    std::error_code ec;
+    std::filesystem::recursive_directory_iterator it(
+        root, std::filesystem::directory_options::skip_permission_denied, ec);
+    const std::filesystem::recursive_directory_iterator end;
+    for (; it != end; it.increment(ec)) {
+        if (ec) {
+            ec.clear();
+            continue;
+        }
+        if (!it->is_regular_file(ec)) {
+            ec.clear();
+            continue;
+        }
+        auto ext = it->path().extension().wstring();
+        std::transform(ext.begin(), ext.end(), ext.begin(), ::towlower);
+        if (ext != L".mid" && ext != L".midi")
+            continue;
+
+        std::error_code relEc;
+        auto rel = std::filesystem::relative(it->path(), root, relEc);
+        songs.push_back({
+            relEc ? it->path().filename().wstring() : rel.wstring(),
+            it->path().wstring()
+        });
+    }
+
+    std::sort(songs.begin(), songs.end(), [](const OverlaySongEntry& a, const OverlaySongEntry& b) {
+        return _wcsicmp(a.display.c_str(), b.display.c_str()) < 0;
+    });
+
+    int selected = -1;
+    std::error_code absEc;
+    std::filesystem::path currentAbs = g_currentLoadedMidiPath.empty()
+        ? std::filesystem::path()
+        : std::filesystem::absolute(g_currentLoadedMidiPath, absEc);
+    for (size_t i = 0; i < songs.size(); ++i) {
+        g_overlayMidiPaths.push_back(songs[i].fullPath);
+        SendMessageW(g_hOverlaySongCombo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(songs[i].display.c_str()));
+        if (!g_currentLoadedMidiPath.empty()) {
+            std::error_code itemEc;
+            const auto itemAbs = std::filesystem::absolute(songs[i].fullPath, itemEc);
+            if (!itemEc && !absEc && itemAbs == currentAbs)
+                selected = static_cast<int>(i);
+        }
+    }
+    if (selected >= 0)
+        SendMessage(g_hOverlaySongCombo, CB_SETCURSEL, selected, 0);
+}
+
+static bool OverlayLoadSongByIndex(int index) {
+    if (index < 0 || index >= static_cast<int>(g_overlayMidiPaths.size()))
+        return false;
+    if (!LoadMidiFilePath(g_hOverlayWnd ? g_hOverlayWnd : g_hMainWnd,
+        g_overlayMidiPaths[static_cast<size_t>(index)], false))
+        return false;
+    RefreshOverlaySongList();
+    RefreshOverlayTracks(true);
+    SyncOverlayControls();
+    return true;
+}
+
+static void SyncOverlayControls() {
+    if (!g_hOverlayWnd || !IsWindow(g_hOverlayWnd))
+        return;
+
+    std::wstring songName = L"No MIDI loaded";
+    if (!g_currentLoadedMidiPath.empty())
+        songName = std::filesystem::path(g_currentLoadedMidiPath).filename().wstring();
+
+    std::wstring status = L"MIDI++  |  " + songName;
+    if (MidiConnectPlaybackOutputActive())
+        status += L"  |  MidiConnect ON";
+    SetWindowTextW(GetDlgItem(g_hOverlayWnd, ID_OV_STATUS), status.c_str());
+
+    if (!g_player) {
+        SetWindowTextW(GetDlgItem(g_hOverlayWnd, ID_OV_TIME), L"0:00 / 0:00");
+        SetWindowTextW(GetDlgItem(g_hOverlayWnd, ID_OV_SPEED), L"1.00x");
+        return;
+    }
+
+    wchar_t speedText[32]{};
+    swprintf_s(speedText, L"%.2fx", g_player->current_speed);
+    SetWindowTextW(GetDlgItem(g_hOverlayWnd, ID_OV_SPEED), speedText);
+
+    const bool hasMidi = g_player->midiFileSelected.load(std::memory_order_acquire);
+    const bool isPaused = g_player->paused.load(std::memory_order_acquire);
+    SetWindowTextW(GetDlgItem(g_hOverlayWnd, ID_OV_PLAY), isPaused ? L"Play" : L"Pause");
+
+    double currentSeconds = 0.0;
+    if (hasMidi) {
+        if (!isPaused)
+            currentSeconds = std::chrono::duration<double>(g_player->get_adjusted_time()).count();
+        else
+            currentSeconds = std::chrono::duration<double>(g_player->total_adjusted_time).count();
+        currentSeconds = std::clamp(currentSeconds, 0.0, g_totalSongSeconds);
+    }
+
+    wchar_t timeText[48]{};
+    const int curM = static_cast<int>(currentSeconds) / 60;
+    const int curS = static_cast<int>(currentSeconds) % 60;
+    const int totalM = static_cast<int>(g_totalSongSeconds) / 60;
+    const int totalS = static_cast<int>(g_totalSongSeconds) % 60;
+    swprintf_s(timeText, L"%d:%02d / %d:%02d", curM, curS, totalM, totalS);
+    SetWindowTextW(GetDlgItem(g_hOverlayWnd, ID_OV_TIME), timeText);
+
+    if (g_hOverlaySeek && !g_overlaySeekDragging && g_totalSongSeconds > 0.0) {
+        const int pos = static_cast<int>(std::clamp(
+            (currentSeconds / g_totalSongSeconds) * 10000.0, 0.0, 10000.0));
+        SendMessage(g_hOverlaySeek, TBM_SETPOS, TRUE, pos);
+    }
+
+    RefreshOverlayTracks(false);
+}
+
+static LRESULT CALLBACK OverlayWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    switch (msg) {
+    case WM_CREATE:
+    {
+        constexpr int W = 820;
+        HFONT font = reinterpret_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
+
+        auto makeButton = [&](const wchar_t* textValue, int id, int x, int y, int w, int h) {
+            HWND control = CreateWindowW(L"button", textValue,
+                WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+                x, y, w, h, hwnd, reinterpret_cast<HMENU>(id), g_hInst, nullptr);
+            SendMessage(control, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
+            return control;
+        };
+        auto makeStatic = [&](const wchar_t* textValue, int id, int x, int y, int w, int h, DWORD extra = SS_LEFT) {
+            HWND control = CreateWindowW(L"static", textValue,
+                WS_CHILD | WS_VISIBLE | extra,
+                x, y, w, h, hwnd, reinterpret_cast<HMENU>(id), g_hInst, nullptr);
+            SendMessage(control, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
+            return control;
+        };
+
+        makeStatic(L"MIDI++ Overlay  |  F5 hides", 0, 14, 8, 240, 20);
+        makeStatic(L"No MIDI loaded", ID_OV_STATUS, 255, 8, 430, 20, SS_CENTER);
+        makeButton(L"Overlay ON", ID_OV_HIDE, 700, 5, 105, 26);
+
+        makeButton(L"Rew -10", ID_OV_REW, 14, 38, 70, 27);
+        makeButton(L"Play", ID_OV_PLAY, 90, 38, 70, 27);
+        makeButton(L"Skip +10", ID_OV_SKIP, 166, 38, 70, 27);
+        makeButton(L"Restart", ID_OV_RESTART, 242, 38, 70, 27);
+        makeButton(L"Speed -", ID_OV_SPEEDDN, 328, 38, 70, 27);
+        makeStatic(L"1.00x", ID_OV_SPEED, 404, 43, 60, 20, SS_CENTER);
+        makeButton(L"Speed +", ID_OV_SPEEDUP, 470, 38, 70, 27);
+        makeButton(L"Panic", ID_OV_PANIC, 550, 38, 65, 27);
+        makeStatic(L"0:00 / 0:00", ID_OV_TIME, 630, 43, 175, 20, SS_CENTER);
+
+        g_hOverlaySeek = CreateWindowExW(0, TRACKBAR_CLASSW, L"",
+            WS_CHILD | WS_VISIBLE | TBS_NOTICKS,
+            14, 70, W - 28, 30,
+            hwnd, reinterpret_cast<HMENU>(ID_OV_SEEK), g_hInst, nullptr);
+        SendMessage(g_hOverlaySeek, TBM_SETRANGE, TRUE, MAKELPARAM(0, 10000));
+        SendMessage(g_hOverlaySeek, TBM_SETPOS, TRUE, 0);
+
+        makeStatic(L"Song:", 0, 14, 108, 42, 20);
+        makeButton(L"Prev", ID_OV_PREV, 60, 103, 52, 27);
+        g_hOverlaySongCombo = CreateWindowW(L"combobox", nullptr,
+            WS_CHILD | WS_VISIBLE | WS_TABSTOP | CBS_DROPDOWNLIST | WS_VSCROLL,
+            118, 103, 550, 300,
+            hwnd, reinterpret_cast<HMENU>(ID_OV_SONG), g_hInst, nullptr);
+        SendMessage(g_hOverlaySongCombo, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
+        makeButton(L"Next", ID_OV_NEXT, 674, 103, 52, 27);
+        makeButton(L"Refresh", ID_BTN_REFRESH, 732, 103, 73, 27);
+
+        makeStatic(L"Parts / tracks", 0, 14, 142, 110, 20);
+        g_hOverlayTrackList = CreateWindowExW(WS_EX_CLIENTEDGE, L"listbox", nullptr,
+            WS_CHILD | WS_VISIBLE | WS_TABSTOP | LBS_NOTIFY | WS_VSCROLL | LBS_NOINTEGRALHEIGHT,
+            14, 164, 650, 118,
+            hwnd, reinterpret_cast<HMENU>(ID_OV_TRACKS), g_hInst, nullptr);
+        SendMessage(g_hOverlayTrackList, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
+        makeButton(L"Mute / Unmute", ID_OV_MUTE, 674, 164, 131, 30);
+        makeButton(L"Solo / Unsolo", ID_OV_SOLO, 674, 200, 131, 30);
+        makeStatic(L"[M] muted   [S] soloed", 0, 674, 244, 131, 38, SS_CENTER);
+
+        SetLayeredWindowAttributes(hwnd, 0, 230, LWA_ALPHA);
+        SetTimer(hwnd, OVERLAY_TIMER_ID, 150, nullptr);
+        RefreshOverlaySongList();
+        RefreshOverlayTracks(true);
+        SyncOverlayControls();
+        return 0;
+    }
+
+    case WM_MOUSEACTIVATE:
+        return MA_NOACTIVATE;
+
+    case WM_NCHITTEST:
+    {
+        LRESULT hit = DefWindowProcW(hwnd, msg, wParam, lParam);
+        if (hit == HTCLIENT) {
+            POINT pt{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+            ScreenToClient(hwnd, &pt);
+            if (pt.y >= 0 && pt.y < 32)
+                return HTCAPTION;
+        }
+        return hit;
+    }
+
+    case WM_SIZE:
+    {
+        RECT rc{};
+        GetClientRect(hwnd, &rc);
+        HRGN rgn = CreateRoundRectRgn(0, 0, rc.right + 1, rc.bottom + 1, 18, 18);
+        SetWindowRgn(hwnd, rgn, TRUE); // Windows owns rgn after success.
+        return 0;
+    }
+
+    case WM_ERASEBKGND:
+    {
+        RECT rc{};
+        GetClientRect(hwnd, &rc);
+        HBRUSH brush = CreateSolidBrush(RGB(28, 28, 34));
+        FillRect(reinterpret_cast<HDC>(wParam), &rc, brush);
+        DeleteObject(brush);
+        return 1;
+    }
+
+    case WM_CTLCOLORSTATIC:
+    {
+        HDC hdc = reinterpret_cast<HDC>(wParam);
+        SetTextColor(hdc, RGB(240, 240, 245));
+        SetBkMode(hdc, TRANSPARENT);
+        static HBRUSH brush = CreateSolidBrush(RGB(28, 28, 34));
+        return reinterpret_cast<LRESULT>(brush);
+    }
+
+    case WM_HSCROLL:
+        if (reinterpret_cast<HWND>(lParam) == g_hOverlaySeek) {
+            const int code = LOWORD(wParam);
+            if (code == TB_THUMBTRACK)
+                g_overlaySeekDragging = true;
+            if (code == TB_THUMBPOSITION || code == TB_ENDTRACK ||
+                code == TB_LINEUP || code == TB_LINEDOWN ||
+                code == TB_PAGEUP || code == TB_PAGEDOWN) {
+                g_overlaySeekDragging = false;
+                if (g_player && g_player->midiFileSelected.load(std::memory_order_acquire) &&
+                    g_totalSongSeconds > 0.0) {
+                    const int pos = static_cast<int>(SendMessage(g_hOverlaySeek, TBM_GETPOS, 0, 0));
+                    const double target = g_totalSongSeconds * (static_cast<double>(pos) / 10000.0);
+                    g_player->seek_to(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                        std::chrono::duration<double>(target)));
+                }
+            }
+            return 0;
+        }
+        break;
+
+    case WM_COMMAND:
+    {
+        const int id = LOWORD(wParam);
+        const int code = HIWORD(wParam);
+        switch (id) {
+        case ID_OV_HIDE:
+            if (code == BN_CLICKED)
+                SetOverlayVisible(false);
+            return 0;
+
+        case ID_OV_PLAY:
+            if (code == BN_CLICKED && g_player &&
+                g_player->midiFileSelected.load(std::memory_order_acquire) &&
+                !(g_midi2key && g_midi2key->IsActive())) {
+                FocusRobloxWindow();
+                g_player->toggle_play_pause();
+                SyncOverlayControls();
+            }
+            return 0;
+
+        case ID_OV_REW:
+            if (code == BN_CLICKED && g_player &&
+                g_player->midiFileSelected.load(std::memory_order_acquire)) {
+                using namespace std::chrono_literals;
+                g_player->rewind(10s);
+            }
+            return 0;
+
+        case ID_OV_SKIP:
+            if (code == BN_CLICKED && g_player &&
+                g_player->midiFileSelected.load(std::memory_order_acquire)) {
+                using namespace std::chrono_literals;
+                g_player->skip(10s);
+            }
+            return 0;
+
+        case ID_OV_SPEEDDN:
+            if (code == BN_CLICKED && g_player &&
+                g_player->midiFileSelected.load(std::memory_order_acquire)) {
+                g_player->slow_down();
+                SyncOverlayControls();
+            }
+            return 0;
+
+        case ID_OV_SPEEDUP:
+            if (code == BN_CLICKED && g_player &&
+                g_player->midiFileSelected.load(std::memory_order_acquire)) {
+                g_player->speed_up();
+                SyncOverlayControls();
+            }
+            return 0;
+
+        case ID_OV_RESTART:
+            if (code == BN_CLICKED && g_player &&
+                g_player->midiFileSelected.load(std::memory_order_acquire)) {
+                FocusRobloxWindow();
+                g_player->restart_song();
+                SyncOverlayControls();
+            }
+            return 0;
+
+        case ID_OV_PANIC:
+            if (code == BN_CLICKED && g_player) {
+                g_player->panic();
+                SyncOverlayControls();
+            }
+            return 0;
+
+        case ID_OV_SONG:
+            if (code == CBN_SELCHANGE) {
+                const int selected = static_cast<int>(SendMessage(g_hOverlaySongCombo, CB_GETCURSEL, 0, 0));
+                OverlayLoadSongByIndex(selected);
+            }
+            return 0;
+
+        case ID_OV_PREV:
+        case ID_OV_NEXT:
+            if (code == BN_CLICKED && !g_overlayMidiPaths.empty()) {
+                int selected = static_cast<int>(SendMessage(g_hOverlaySongCombo, CB_GETCURSEL, 0, 0));
+                if (selected == CB_ERR)
+                    selected = 0;
+                else if (id == ID_OV_PREV)
+                    selected = (selected - 1 + static_cast<int>(g_overlayMidiPaths.size())) %
+                        static_cast<int>(g_overlayMidiPaths.size());
+                else
+                    selected = (selected + 1) % static_cast<int>(g_overlayMidiPaths.size());
+                SendMessage(g_hOverlaySongCombo, CB_SETCURSEL, selected, 0);
+                OverlayLoadSongByIndex(selected);
+            }
+            return 0;
+
+        case ID_BTN_REFRESH:
+            if (code == BN_CLICKED)
+                RefreshOverlaySongList();
+            return 0;
+
+        case ID_OV_MUTE:
+        case ID_OV_SOLO:
+            if (code == BN_CLICKED && g_player && g_hOverlayTrackList) {
+                const int selected = static_cast<int>(SendMessage(g_hOverlayTrackList, LB_GETCURSEL, 0, 0));
+                if (selected >= 0 && selected < static_cast<int>(g_player->midi_file.tracks.size())) {
+                    if (id == ID_OV_MUTE) {
+                        const bool oldState = selected < static_cast<int>(g_player->trackMuted.size()) &&
+                            g_player->trackMuted[selected] &&
+                            g_player->trackMuted[selected]->load(std::memory_order_acquire);
+                        g_player->set_track_mute(static_cast<size_t>(selected), !oldState);
+                    }
+                    else {
+                        const bool oldState = selected < static_cast<int>(g_player->trackSoloed.size()) &&
+                            g_player->trackSoloed[selected] &&
+                            g_player->trackSoloed[selected]->load(std::memory_order_acquire);
+                        g_player->set_track_solo(static_cast<size_t>(selected), !oldState);
+                    }
+                    g_overlayTrackStateSignature.clear();
+                    RefreshOverlayTracks(true);
+                    UpdateTrackInfo();
+                }
+            }
+            return 0;
+        }
+        break;
+    }
+
+    case WM_TIMER:
+        if (wParam == OVERLAY_TIMER_ID) {
+            SyncOverlayControls();
+            return 0;
+        }
+        break;
+
+    case WM_CLOSE:
+        SetOverlayVisible(false);
+        return 0;
+
+    case WM_DESTROY:
+        KillTimer(hwnd, OVERLAY_TIMER_ID);
+        g_hOverlayWnd = nullptr;
+        g_hOverlaySeek = nullptr;
+        g_hOverlaySongCombo = nullptr;
+        g_hOverlayTrackList = nullptr;
+        g_overlayVisible = false;
+        return 0;
+    }
+    return DefWindowProcW(hwnd, msg, wParam, lParam);
+}
+
+static bool EnsureOverlayWindow() {
+    if (g_hOverlayWnd && IsWindow(g_hOverlayWnd))
+        return true;
+
+    static bool overlayClassRegistered = false;
+    if (!overlayClassRegistered) {
+        WNDCLASSEXW wc{};
+        wc.cbSize = sizeof(wc);
+        wc.lpfnWndProc = OverlayWndProc;
+        wc.hInstance = g_hInst;
+        wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
+        wc.hbrBackground = CreateSolidBrush(RGB(28, 28, 34));
+        wc.lpszClassName = L"MIDIPlusPlusOverlay";
+        if (!RegisterClassExW(&wc) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) {
+            std::cout << "[Overlay] Could not register overlay window class.\n";
+            return false;
+        }
+        overlayClassRegistered = true;
+    }
+
+    RECT work{};
+    SystemParametersInfoW(SPI_GETWORKAREA, 0, &work, 0);
+    constexpr int width = 820;
+    constexpr int height = 300;
+    const int x = work.left + std::max(0, (work.right - work.left - width) / 2);
+    const int y = work.top + 45;
+
+    g_hOverlayWnd = CreateWindowExW(
+        WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_LAYERED | WS_EX_NOACTIVATE,
+        L"MIDIPlusPlusOverlay",
+        L"MIDI++ Overlay",
+        WS_POPUP | WS_CLIPCHILDREN,
+        x, y, width, height,
+        g_hMainWnd, nullptr, g_hInst, nullptr);
+
+    if (!g_hOverlayWnd) {
+        std::cout << "[Overlay] Could not create overlay window. Error " << GetLastError() << ".\n";
+        return false;
+    }
+    return true;
+}
+
+static void SetOverlayVisible(bool visible) {
+    if (visible) {
+        if (!EnsureOverlayWindow())
+            return;
+        g_overlayVisible = true;
+        g_toggleStates[ID_BTN_OVERLAY] = true;
+        RefreshOverlaySongList();
+        g_overlayTrackStateSignature.clear();
+        RefreshOverlayTracks(true);
+        SyncOverlayControls();
+        ShowWindow(g_hOverlayWnd, SW_SHOWNOACTIVATE);
+        SetWindowPos(g_hOverlayWnd, HWND_TOPMOST, 0, 0, 0, 0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+        // Free the single-monitor workspace without terminating or pausing MIDI++.
+        ShowWindow(g_hMainWnd, SW_MINIMIZE);
+        std::cout << "[Overlay] Enabled. Press F5 or Overlay ON to hide it.\n";
+    }
+    else {
+        g_overlayVisible = false;
+        g_toggleStates[ID_BTN_OVERLAY] = false;
+        if (g_hOverlayWnd && IsWindow(g_hOverlayWnd))
+            ShowWindow(g_hOverlayWnd, SW_HIDE);
+        std::cout << "[Overlay] Hidden. MIDI++ continues running.\n";
+    }
+
+    if (g_hMainWnd) {
+        HWND button = GetDlgItem(g_hMainWnd, ID_BTN_OVERLAY);
+        if (button)
+            InvalidateRect(button, nullptr, TRUE);
+    }
+}
+
 static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
         // temporary fix: this shit
@@ -2066,10 +2684,14 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
             WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
             Layout::PADV_X + 15, Layout::PADV_Y + 96, 95, 27,
             hWnd, reinterpret_cast<HMENU>(ID_BTN_PLAYABILITY), g_hInst, nullptr);
-        CreateWindowW(L"static", L"Optional: max 5 notes/hand, 10 total per simultaneous attack",
+        CreateWindowW(L"static", L"Optional: max 5 notes/hand, 10 total per attack",
             WS_CHILD | WS_VISIBLE,
-            Layout::PADV_X + 120, Layout::PADV_Y + 101, 430, 20,
+            Layout::PADV_X + 120, Layout::PADV_Y + 101, 330, 20,
             hWnd, nullptr, g_hInst, nullptr);
+        CreateWindowW(L"button", L"Overlay (F5)",
+            WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
+            Layout::PADV_X + 465, Layout::PADV_Y + 96, 115, 27,
+            hWnd, reinterpret_cast<HMENU>(ID_BTN_OVERLAY), g_hInst, nullptr);
 
         // Config Group
         CreateWindowW(L"button", L"Config",
@@ -2159,7 +2781,7 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
             hWnd, reinterpret_cast<HMENU>(ID_BTN_REFRESH_VCURVE), g_hInst, nullptr);
 
         // Initialize Toggle States
-        std::vector<int> toggles = { ID_BTN_88KEY, ID_BTN_VOLADJ, ID_BTN_VELOCITY, ID_BTN_SUSTAIN, ID_BTN_TRANSPOSEOUT, ID_BTN_PLAYABILITY, ID_BTN_MIDI2QWERTY };
+        std::vector<int> toggles = { ID_BTN_88KEY, ID_BTN_VOLADJ, ID_BTN_VELOCITY, ID_BTN_SUSTAIN, ID_BTN_TRANSPOSEOUT, ID_BTN_PLAYABILITY, ID_BTN_OVERLAY, ID_BTN_MIDI2QWERTY };
         for (int t : toggles)
             g_toggleStates[t] = false;
         if (g_player && g_player->eightyEightKeyModeActive)
@@ -2186,10 +2808,13 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
         AddToolTip(hWnd, ID_BTN_VELOCITY, L"Use MIDI note velocity when choosing virtual-piano velocity keys.");
         AddToolTip(hWnd, ID_BTN_TRANSPOSEOUT, L"Transpose notes that would otherwise fall outside the selected keyboard range.");
         AddToolTip(hWnd, ID_BTN_PLAYABILITY, L"Optional virtual-piano optimizer. Limits simultaneous physical attacks to 5 notes per hand and 10 total while preserving bass, top voice, velocity, and likely melody importance.");
+        AddToolTip(hWnd, ID_BTN_OVERLAY, L"Show the in-game overlay. F5 toggles the overlay from anywhere.");
         AddToolTip(hWnd, ID_BTN_MIDI2QWERTY, L"Use a physical MIDI input device to send QWERTY piano keys.");
         AddToolTip(hWnd, ID_BTN_MIDICONNECT, L"Send loaded MIDI (and optional live MIDI input) directly through the Visual Pianos MidiConnect protocol.");
         AddToolTip(hWnd, ID_SLIDER_SEEK, L"Drag to seek directly through the loaded song.");
         SetTimer(hWnd, IDT_TIMELEFT_TIMER, 200, nullptr);
+        if (!RegisterHotKey(hWnd, OVERLAY_HOTKEY_ID, MOD_NOREPEAT, VK_F5))
+            std::cout << "[Overlay] Warning: F5 could not be registered as the global overlay toggle.\n";
         g_guiReady.store(true);
         PostMessage(hWnd, WM_UPDATE_LOG, 0, 0);
         UpdateWindowFocusability();
@@ -2306,6 +2931,13 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
         DragFinish(drop); return 0;
     }
 
+    case WM_HOTKEY:
+        if (wParam == OVERLAY_HOTKEY_ID) {
+            SetOverlayVisible(!g_overlayVisible);
+            return 0;
+        }
+        break;
+
     case WM_COMMAND:
     {
         int id = LOWORD(wParam);
@@ -2343,6 +2975,11 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
                 PopulateMidiList();
                 std::wcout << L"[Refresh] MIDI browser refreshed.\n";
             }
+            break;
+
+        case ID_BTN_OVERLAY:
+            if (code == BN_CLICKED)
+                SetOverlayVisible(!g_overlayVisible);
             break;
 
         case ID_BTN_HUMANIZER:
@@ -2956,6 +3593,9 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
         break;
     }
     case WM_DESTROY:
+        UnregisterHotKey(hWnd, OVERLAY_HOTKEY_ID);
+        if (g_hOverlayWnd && IsWindow(g_hOverlayWnd))
+            DestroyWindow(g_hOverlayWnd);
         if (g_player) {
             g_player->should_stop.store(true, std::memory_order_release);
             SetEvent(g_player->command_event);
@@ -3134,6 +3774,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
     std::cout << "  Rewind:         " << getReadableKey(cfg.hotkeys.REWIND_KEY) << "\n";
     std::cout << "  Skip:           " << getReadableKey(cfg.hotkeys.SKIP_KEY) << "\n";
     std::cout << "  Panic/Release:  " << getReadableKey(cfg.hotkeys.PANIC_KEY) << "\n";
+    std::cout << "  Overlay Toggle: F5\n";
 
     SetStartupStatus(startupSplash, L"Loading application resources...");
     HICON hIcon = LoadIconW(hInstance, MAKEINTRESOURCEW(IDI_APP_ICON));
