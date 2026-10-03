@@ -2401,8 +2401,9 @@ static bool EnsureOverlayWindow() {
     SystemParametersInfoW(SPI_GETWORKAREA, 0, &work, 0);
     constexpr int width = 820;
     constexpr int height = 300;
-    const int x = work.left + std::max(0, (work.right - work.left - width) / 2);
-    const int y = work.top + 45;
+    const int workWidth = static_cast<int>(work.right - work.left);
+    const int x = static_cast<int>(work.left) + std::max(0, (workWidth - width) / 2);
+    const int y = static_cast<int>(work.top) + 45;
 
     g_hOverlayWnd = CreateWindowExW(
         WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_LAYERED | WS_EX_NOACTIVATE,
