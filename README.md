@@ -14,7 +14,9 @@ This modified build remains licensed under the GNU GPL v3. See [LICENSE](LICENSE
 - Repeated-note gap handling for cleaner retriggers.
 - Direct loaded-MIDI output to Visual Pianos through the built-in MidiConnect protocol.
 - No external MidiConnect program or virtual MIDI-port add-on is required for Visual Pianos playback.
-- MIDI browser search, recent files, drag-and-drop loading, reload, seek, speed display, transpose display, panic feedback, and Reset Playback.
+- MIDI browser search, folder navigation, remembered sort/folder state, up to 10 recent files, drag-and-drop loading, reload, seek, speed display, transpose display, panic feedback, and Reset Playback.
+- Integrated Full ↔ Overlay mode for single-monitor Roblox use, including playback, seeking, speed, song switching, and track mute/solo controls.
+- In-app Settings window for interface, playback, Humanizer, Playability, volume, and hotkey configuration without manually editing config.json.
 - Physical MIDI input remains available through Midi2Key, but physical devices are not scanned during startup.
 
 ## Requirements
@@ -32,7 +34,7 @@ For normal installation, use the repository's **Releases** page. You do not need
 
 1. Open **Releases** on this repository.
 2. Open the newest stable release.
-3. Under **Assets**, download the release ZIP. For Humanizer 2.0 this is `MIDIPlusPlus-Humanizer-2.0.zip`.
+3. Under **Assets**, download the release ZIP. For Humanizer 2.0.1 this is `MIDIPlusPlus-Humanizer-2.0.1.zip`.
 4. Extract the ZIP to a normal folder.
 5. Run `MIDI++.exe` from the extracted folder.
 
@@ -117,7 +119,7 @@ Built-in presets include:
 
 You can save up to five custom presets, duplicate presets, rename/update them, and import/export Humanizer presets as JSON.
 
-Humanizer 2.0 also contains optional advanced settings in `config.json` for tempo-aware timing, melody-priority timing, and velocity humanization. See [HUMANIZER.md](MIDIPlusPlus-1.0.4.R5_Rel/HUMANIZER.md) for details.
+Humanizer 2.0 also contains optional advanced settings for tempo-aware timing, melody-priority timing, and velocity humanization. Humanizer 2.0.1 exposes these and most other user-facing configuration through the in-app **Settings** window. See [HUMANIZER.md](MIDIPlusPlus-1.0.4.R5_Rel/HUMANIZER.md) for details.
 
 ## Useful controls
 
@@ -131,6 +133,8 @@ Humanizer 2.0 also contains optional advanced settings in `config.json` for temp
 - **Playability** — optional Humanizer 2.0 optimizer for physically plausible simultaneous attacks.
 - **MidiConnect** — send loaded MIDI directly using the Visual Pianos MidiConnect protocol.
 - **Refresh MIDI** — scan for physical MIDI devices only when needed.
+- **Overlay (F5)** — switch between the full MIDI++ interface and the translucent in-game overlay without interrupting playback.
+- **Settings** — edit common config options, save them to config.json, restore defaults, or restart MIDI++ to apply changes cleanly.
 
 ## Configuration and files
 
