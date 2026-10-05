@@ -10,7 +10,6 @@ on:
   push:
     branches:
       - main
-      - feature/qol-search-speed-overlay-ui
   release:
     types:
       - published
