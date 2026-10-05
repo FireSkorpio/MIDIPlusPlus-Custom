@@ -1,4 +1,4 @@
-name: Publish MIDI++ Humanizer 2.0.1
+name: Package MIDI++ Humanizer 2.0.1
 
 on:
   push:
@@ -9,45 +9,17 @@ on:
 
 permissions:
   contents: write
+  actions: write
 
 jobs:
-  publish:
+  package-release:
     runs-on: ubuntu-latest
     steps:
-      - name: Create Humanizer 2.0.1 release
+      - name: Dispatch release package build
         env:
           GH_TOKEN: ${{ github.token }}
-        shell: bash
         run: |
-          cat > /tmp/release-notes.md <<'EOF'
-          ## MIDI++ Humanizer 2.0.1
-
-          This is a quality-of-life update to the Humanizer 2.0 Windows build. The Humanizer 2.0 engine remains the same; this release focuses on usability, browser fixes, overlay controls, and settings.
-
-          ### New
-          - Integrated Full ↔ Overlay mode for single-monitor Roblox use. Press F5 to switch modes.
-          - Overlay playback controls: play/pause, seek, ±10 seconds, restart, speed control, song switching, Panic, and track mute/solo.
-          - In-app Settings window for interface, playback, volume, Humanizer/advanced options, Playability, auto-transpose, and hotkeys.
-          - Save Settings, Reset Defaults, and Restart MIDI++ controls.
-          - Improved MIDI browser with Up/Backspace navigation, Enter to open/load, current-folder display, Clear Search, remembered sort order and last folder, and up to 10 recent MIDIs.
-
-          ### Fixes
-          - Fixed the MIDI search text buffer bug that could make live search unreliable.
-          - Fixed playback speed carrying into a newly loaded song while the UI incorrectly displayed 1.00x. New songs now reset both displayed and actual playback timing to 1.00x.
-          - Improved MIDI browser selection persistence and right-click favorite hit detection.
-
-          ### Notes
-          - Existing F1-F4 controls remain unchanged. F5 is reserved for Full ↔ Overlay mode.
-          - The Roblox overlapping-note behavior discussed during testing was not changed in MIDI++; repeated-note handling remains unchanged.
-          - Direct MidiConnect playback, Humanizer 2.0, Playability, track controls, and physical MIDI support remain available.
-
-          ### Attribution
-          This is a revision/custom build based on MIDI++ v1.0.4 R5 by Zephkek and contributors. FireSkorpio maintains this modified build and does not claim authorship of the original MIDI++ codebase. See NOTICE.md and the included license files.
-          EOF
-
-          gh release create "MIDI++-Humanizer-2.0.1" \
+          gh workflow run build.yml \
             --repo "${{ github.repository }}" \
-            --target "${{ github.sha }}" \
-            --title "MIDI++ Humanizer 2.0.1" \
-            --latest \
-            --notes-file /tmp/release-notes.md
+            --ref main \
+            -f release_tag="MIDI++-Humanizer-2.0.1"
