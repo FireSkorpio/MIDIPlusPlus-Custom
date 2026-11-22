@@ -1500,15 +1500,19 @@ void VirtualPianoPlayer::play_notes() {
 
         if (!batch.empty()) {
             auto fut = processing_pool.enqueue([this, batch = std::move(batch)]() -> size_t {
+                // The queue is already chronological, with releases before
+                // attacks only at equal timestamps. A late scheduler wake can
+                // batch a complete short note: moving its release ahead of its
+                // earlier attack leaves the output held indefinitely.
                 for (auto* e : batch)
-                    if (e->action == EventType::Release)
-                        execute_note_event(*e);
-                for (auto* e : batch)
-                    if (e->action == EventType::Press)
-                        execute_note_event(*e);
+                    execute_note_event(*e);
                 return batch.size();
                 });
             fut.get();
+            // Also release malformed/unmatched source notes and pedal state at
+            // the actual end of playback, after the final scheduled event.
+            if (current_index == buffer_size)
+                release_all_keys();
         }
     }
 
@@ -1696,9 +1700,12 @@ void VirtualPianoPlayer::press_key(std::string_view note) noexcept {
 }
 
 void VirtualPianoPlayer::release_key(std::string_view note) noexcept {
-    const std::string& key = (eightyEightKeyModeActive ? full_key_mappings[std::string(note)]
-        : limited_key_mappings[std::string(note)]);
-    if (!key.empty() && pressed_keys[std::string(note)].exchange(false, std::memory_order_relaxed))
+    // Use the same resolved note identity as press_key(), including optional
+    // out-of-range folding, for both the output mapping and held-state entry.
+    std::string actual = ENABLE_OUT_OF_RANGE_TRANSPOSE ? transpose_note(note) : std::string(note);
+    const std::string& key = (eightyEightKeyModeActive ? full_key_mappings[actual]
+        : limited_key_mappings[actual]);
+    if (!key.empty() && pressed_keys[actual].exchange(false, std::memory_order_relaxed))
         KeyPress(key, false);
 }
 
